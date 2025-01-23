@@ -148,6 +148,101 @@ echo "Examples done!"
 
 ## Validation Tests
 
+### Test Task Resolution Controls
+
+```bash
+# First create and resolve a task normally
+echo "Creating a task for resolution testing..."
+TEST_TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$(uuidgen)\",
+  \"description\": \"Test resolution controls\",
+  \"amount\": 100000,
+  \"payment_hash\": \"hash123\",
+  \"escrow_agent\": \"$AGENT_PUB\",
+  \"deadline\": $(date -d "+7 days" +%s),
+  \"requirements\": \"Test requirements\"
+}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334)
+TEST_TASK_ID=$(echo $TEST_TASK_EVENT | jq -r .id)
+
+# Accept the task
+echo "Accepting the task..."
+TEST_ACCEPT_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$TEST_TASK_ID\",
+  \"worker_commitment\": \"I agree to complete this task\"
+}" -t e=$TEST_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+TEST_ACCEPT_ID=$(echo $TEST_ACCEPT_EVENT | jq -r .id)
+
+# Resolve the task
+echo "Resolving the task..."
+nak event --sec $AGENT_KEY -k 30403 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$TEST_TASK_ID\",
+  \"resolution\": \"settled\",
+  \"settlement_proof\": \"proof123\",
+  \"resolution_details\": \"Task completed\"
+}" -t e=$TEST_TASK_ID -t e=$TEST_ACCEPT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
+
+# Try to accept the task again (should fail)
+echo "Trying to accept already resolved task (should fail)..."
+nak event --sec $WORKER_KEY -k 30402 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$TEST_TASK_ID\",
+  \"worker_commitment\": \"Trying to accept resolved task\"
+}" -t e=$TEST_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
+
+# Try to resolve the task again (should fail)
+echo "Trying to resolve task again (should fail)..."
+nak event --sec $AGENT_KEY -k 30403 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$TEST_TASK_ID\",
+  \"resolution\": \"settled\",
+  \"settlement_proof\": \"proof123\",
+  \"resolution_details\": \"Trying to resolve again\"
+}" -t e=$TEST_TASK_ID -t e=$TEST_ACCEPT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
+```
+
+### Test Multiple Acceptances Before Resolution
+
+```bash
+# Create another test task
+echo "Creating a task for multiple acceptance testing..."
+MULTI_TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$(uuidgen)\",
+  \"description\": \"Test multiple acceptances\",
+  \"amount\": 100000,
+  \"payment_hash\": \"hash123\",
+  \"escrow_agent\": \"$AGENT_PUB\",
+  \"deadline\": $(date -d "+7 days" +%s),
+  \"requirements\": \"Test requirements\"
+}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334)
+MULTI_TASK_ID=$(echo $MULTI_TASK_EVENT | jq -r .id)
+
+# Multiple workers can accept the task
+echo "First worker accepting..."
+ACCEPT1_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$MULTI_TASK_ID\",
+  \"worker_commitment\": \"First worker accepts\"
+}" -t e=$MULTI_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+
+# Generate another worker key for testing
+echo "Generating another worker key..."
+WORKER2_KEY=$(nak key generate)
+WORKER2_PUB=$(nak key public $WORKER2_KEY)
+
+echo "Second worker accepting..."
+ACCEPT2_EVENT=$(nak event --sec $WORKER2_KEY -k 30402 -c "{
+  \"version\": \"1.0.0\",
+  \"task_id\": \"$MULTI_TASK_ID\",
+  \"worker_commitment\": \"Second worker accepts\"
+}" -t e=$MULTI_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER2_PUB -t p=$AGENT_PUB ws://localhost:3334)
+```
+
+## Other Validation Tests
+
 ```bash
 # Test invalid deadline (too far in future)
 LONG_DEADLINE=$(date -d "+60 days" +%s)

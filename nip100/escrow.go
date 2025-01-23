@@ -3,8 +3,7 @@ package nip100
 import (
 	"context"
 	"encoding/json"
-	"time"
-  "fmt"
+	"fmt"
 
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -17,17 +16,22 @@ const (
 	KindTaskResolution         = 30403
 )
 
+// ValidationContext holds functions needed for validation
+type ValidationContext struct {
+	QueryEvents func(context.Context, nostr.Filter) (chan *nostr.Event, error)
+}
+
 // ValidateEscrowEvent validates all NIP-100 events
-func ValidateEscrowEvent(ctx context.Context, evt *nostr.Event) (bool, string) {
+func ValidateEscrowEvent(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
 	switch evt.Kind {
 	case KindEscrowAgentRegistration:
 		return validateAgentRegistration(evt)
 	case KindTaskCreation:
 		return validateTaskCreation(evt)
 	case KindTaskAcceptance:
-		return validateTaskAcceptance(evt)
+		return validateTaskAcceptance(ctx, evt, valCtx)
 	case KindTaskResolution:
-		return validateTaskResolution(evt)
+		return validateTaskResolution(ctx, evt, valCtx)
 	}
 	return false, ""
 }
@@ -45,8 +49,9 @@ func PreventFarFutureDeadlines(ctx context.Context, evt *nostr.Event) (bool, str
 		return true, "invalid task creation json"
 	}
 
-	maxDeadline := time.Now().AddDate(0, 0, 30).Unix()
-	if m.Deadline > maxDeadline {
+	// Calculate 30 days from now in Unix timestamp
+	maxDeadline := nostr.Now() + 30*24*60*60 // 30 days in seconds
+	if m.Deadline > int64(maxDeadline) {
 		return true, "deadline too far in the future (max 30 days)"
 	}
 
@@ -101,7 +106,7 @@ func validateTaskCreation(evt *nostr.Event) (bool, string) {
 	return false, ""
 }
 
-func validateTaskAcceptance(evt *nostr.Event) (bool, string) {
+func validateTaskAcceptance(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
 	var m struct {
 		Version          string `json:"version"`
 		TaskID          string `json:"task_id"`
@@ -124,17 +129,34 @@ func validateTaskAcceptance(evt *nostr.Event) (bool, string) {
 		return true, "must reference task event"
 	}
 
-	// Verify the referenced task event exists and is of kind 30401
+	// Verify the referenced task event exists and check if it's already resolved
 	taskEventId := eRefs[0][1]
 	fmt.Printf("Task event ID from tag: %s\n", taskEventId)
 	
 	if taskEventId == "" {
 		return true, "invalid task event reference"
 	}
+
+	// Check if this task has already been resolved
+	resolutionFilter := nostr.Filter{
+		Kinds: []int{KindTaskResolution},
+		Tags: nostr.TagMap{
+			"e": []string{taskEventId},
+		},
+	}
+	
+	resolutionEvents, err := valCtx.QueryEvents(ctx, resolutionFilter)
+	if err == nil {
+		for evt := range resolutionEvents {
+			if evt != nil {
+				return true, "task has already been resolved"
+			}
+		}
+	}
 	return false, ""
 }
 
-func validateTaskResolution(evt *nostr.Event) (bool, string) {
+func validateTaskResolution(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
 	var m struct {
 		Version          string `json:"version"`
 		TaskID          string `json:"task_id"`
@@ -155,6 +177,24 @@ func validateTaskResolution(evt *nostr.Event) (bool, string) {
 	eRefs := evt.Tags.GetAll([]string{"e"})
 	if len(eRefs) < 2 {
 		return true, "must reference both task and acceptance events"
+	}
+
+	// Check if this task has already been resolved
+	taskEventId := eRefs[0][1]
+	resolutionFilter := nostr.Filter{
+		Kinds: []int{KindTaskResolution},
+		Tags: nostr.TagMap{
+			"e": []string{taskEventId},
+		},
+	}
+	
+	resolutionEvents, err := valCtx.QueryEvents(ctx, resolutionFilter)
+	if err == nil {
+		for evt := range resolutionEvents {
+			if evt != nil {
+				return true, "task has already been resolved"
+			}
+		}
 	}
 	return false, ""
 }
