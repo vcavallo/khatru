@@ -18,6 +18,8 @@ func main() {
 		func(ctx context.Context, event *nostr.Event) (bool, string) {
 			// Debug logging
 			fmt.Printf("Validating event kind %d with %d tags\n", event.Kind, len(event.Tags))
+			fmt.Printf("Event content: %s\n", event.Content)
+			fmt.Printf("Event tags: %+v\n", event.Tags)
 			reject, msg := nip100.ValidateEscrowEvent(ctx, event)
 			if reject {
 				fmt.Printf("Event rejected: %s\n", msg)

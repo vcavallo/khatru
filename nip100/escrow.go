@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+  "fmt"
 
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -112,14 +113,21 @@ func validateTaskAcceptance(evt *nostr.Event) (bool, string) {
 	if m.Version == "" || m.TaskID == "" || m.WorkerCommitment == "" {
 		return true, "invalid task acceptance parameters"
 	}
+	// Debug: Print all tags
+	fmt.Printf("Task acceptance tags: %+v\n", evt.Tags)
+	
 	// Check if there's at least one "e" tag
 	eRefs := evt.Tags.GetAll([]string{"e"})
+	fmt.Printf("Found e tags: %+v\n", eRefs)
+	
 	if len(eRefs) == 0 {
 		return true, "must reference task event"
 	}
 
 	// Verify the referenced task event exists and is of kind 30401
 	taskEventId := eRefs[0][1]
+	fmt.Printf("Task event ID from tag: %s\n", taskEventId)
+	
 	if taskEventId == "" {
 		return true, "invalid task event reference"
 	}
