@@ -27,65 +27,94 @@ echo ""
 ### 1. Register Escrow Agent
 
 # Register the escrow agent
-AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 30400 -c "{
-  \"version\": \"1.0.0\",
-  \"pubkey\": \"$AGENT_PUB\",
+AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 3400 -c "{
+  \"name\": \"Trusted Escrow Agent\",
+  \"about\": \"Professional escrow service for nostr tasks\",
   \"fee_rate\": 0.01,
   \"min_amount\": 1000,
   \"max_amount\": 1000000,
   \"dispute_resolution_policy\": \"Mediation first, then arbitration\",
   \"supported_currencies\": [\"BTC\"]
-}" -t p=$AGENT_PUB -t t=ln-escrow-agent ws://localhost:3334)
+}" -t p=$AGENT_PUB -t r="https://terms.example.com" ws://localhost:3334)
 
 # Save the event ID
 AGENT_EVENT_ID=$(echo $AGENT_EVENT | jq -r .id)
 echo "Agent registration event ID: $AGENT_EVENT_ID"
 echo ""
 
-### 2. Create Task
+### 2. Create Task Proposal
 
-# Create a task (deadline 7 days from now)
+# Create a task proposal
 DEADLINE=$(date -d "+7 days" +%s)
-TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$(uuidgen)\",
+TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 3401 -c "{
   \"description\": \"Create a nostr client\",
-  \"amount\": 100000,
-  \"payment_hash\": \"hash123\",
-  \"escrow_agent\": \"$AGENT_PUB\",
-  \"deadline\": $DEADLINE,
-  \"requirements\": \"Must support NIPs 1,2,4\"
-}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334)
+  \"requirements\": \"Must support NIPs 1,2,4\",
+  \"deadline\": $DEADLINE
+}" -t p=$AGENT_PUB -t amount=100000 ws://localhost:3334)
 
 # Save the event ID
 TASK_EVENT_ID=$(echo $TASK_EVENT | jq -r .id)
-echo "Task creation event ID: $TASK_EVENT_ID"
+echo "Task proposal event ID: $TASK_EVENT_ID"
 echo ""
 
-### 3. Accept Task
+### 3. Agent Accepts Task
 
-# Worker accepts the task
-ACCEPT_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TASK_EVENT_ID\",
-  \"worker_commitment\": \"I agree to complete this task according to requirements\"
-}" -t e=$TASK_EVENT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+# Agent accepts the task
+ACCEPT_EVENT=$(nak event --sec $AGENT_KEY -k 3402 -t e=$TASK_EVENT_ID -t p=$CREATOR_PUB ws://localhost:3334)
 
 # Save the event ID
 ACCEPT_EVENT_ID=$(echo $ACCEPT_EVENT | jq -r .id)
 echo "Task acceptance event ID: $ACCEPT_EVENT_ID"
 echo ""
 
-### 4. Resolve Task
+### 4. Task Finalization (after zap)
 
-# Resolve the task (can be done by agent)
-RESOLVE_EVENT=$(nak event --sec $AGENT_KEY -k 30403 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TASK_EVENT_ID\",
-  \"resolution\": \"settled\",
-  \"settlement_proof\": \"lightning_txid_123\",
-  \"resolution_details\": \"Task completed successfully\"
-}" -t e=$TASK_EVENT_ID -t e=$ACCEPT_EVENT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+# Simulate task finalization after zap
+ZAP_RECEIPT_ID="zap_receipt_123" # In reality this would come from a real zap
+FINAL_EVENT=$(nak event --sec $CREATOR_KEY -k 3403 -t e=$ACCEPT_EVENT_ID -t e=$ZAP_RECEIPT_ID -t p=$AGENT_PUB -t amount=100000 ws://localhost:3334)
+
+# Save the event ID
+FINAL_EVENT_ID=$(echo $FINAL_EVENT | jq -r .id)
+echo "Task finalization event ID: $FINAL_EVENT_ID"
+echo ""
+
+### 5. Worker Application
+
+# Worker applies for the task
+APPLY_EVENT=$(nak event --sec $WORKER_KEY -k 3404 -c "I would like to work on this task. I have experience building nostr clients." -t e=$FINAL_EVENT_ID -t p=$CREATOR_PUB -t p=$AGENT_PUB ws://localhost:3334)
+
+# Save the event ID
+APPLY_EVENT_ID=$(echo $APPLY_EVENT | jq -r .id)
+echo "Worker application event ID: $APPLY_EVENT_ID"
+echo ""
+
+### 6. Worker Assignment
+
+# Creator assigns the task to worker
+ASSIGN_EVENT=$(nak event --sec $CREATOR_KEY -k 3405 -t e=$FINAL_EVENT_ID -t e=$APPLY_EVENT_ID -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+
+# Save the event ID
+ASSIGN_EVENT_ID=$(echo $ASSIGN_EVENT | jq -r .id)
+echo "Worker assignment event ID: $ASSIGN_EVENT_ID"
+echo ""
+
+### 7. Work Submission
+
+# Worker submits completed work
+SUBMIT_EVENT=$(nak event --sec $WORKER_KEY -k 3406 -c "Work completed. Repository: https://github.com/example/nostr-client" -t e=$ASSIGN_EVENT_ID -t p=$CREATOR_PUB -t p=$AGENT_PUB ws://localhost:3334)
+
+# Save the event ID
+SUBMIT_EVENT_ID=$(echo $SUBMIT_EVENT | jq -r .id)
+echo "Work submission event ID: $SUBMIT_EVENT_ID"
+echo ""
+
+### 8. Task Resolution
+
+# Agent resolves the task after verifying work and processing payment
+RESOLVE_EVENT=$(nak event --sec $AGENT_KEY -k 3407 -c "{
+  \"resolution\": \"completed\",
+  \"resolution_details\": \"Work verified and payment sent to worker\"
+}" -t e=$SUBMIT_EVENT_ID -t e=$ZAP_RECEIPT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t amount=99000 ws://localhost:3334)
 
 # Save the event ID
 RESOLVE_EVENT_ID=$(echo $RESOLVE_EVENT | jq -r .id)
@@ -96,23 +125,40 @@ echo ""
 
 # Query all escrow-related events
 echo "All escrow agent registrations:"
-nak req -k 30400 ws://localhost:3334
+nak req -k 3400 ws://localhost:3334
 echo ""
 
-echo "All tasks:"
-nak req -k 30401 ws://localhost:3334
+echo "All task proposals:"
+nak req -k 3401 ws://localhost:3334
 echo ""
 
-echo "All task acceptances:"
-nak req -k 30402 ws://localhost:3334
+echo "All agent acceptances:"
+nak req -k 3402 ws://localhost:3334
+echo ""
+
+echo "All task finalizations:"
+nak req -k 3403 ws://localhost:3334
+echo ""
+
+echo "All worker applications:"
+nak req -k 3404 ws://localhost:3334
+echo ""
+
+echo "All worker assignments:"
+nak req -k 3405 ws://localhost:3334
+echo ""
+
+echo "All work submissions:"
+nak req -k 3406 ws://localhost:3334
 echo ""
 
 echo "All task resolutions:"
-nak req -k 30403 ws://localhost:3334
+nak req -k 3407 ws://localhost:3334
 echo ""
 
-# Query specific task thread
-echo "Complete thread for task $TASK_EVENT_ID:"
-nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $RESOLVE_EVENT_ID localhost:3334
+# Query complete task thread
+echo "Complete thread for task:"
+nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $FINAL_EVENT_ID --id $APPLY_EVENT_ID --id $ASSIGN_EVENT_ID --id $SUBMIT_EVENT_ID --id $RESOLVE_EVENT_ID ws://localhost:3334
 echo ""
-echo "Examples done!"
+
+echo "Test script completed!"
