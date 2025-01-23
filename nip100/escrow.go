@@ -96,6 +96,11 @@ func validateAgentRegistration(evt *nostr.Event) (bool, string) {
 }
 
 func validateTaskProposal(evt *nostr.Event) (bool, string) {
+	fmt.Printf("Validating task proposal. Content: %s\n", evt.Content)
+	fmt.Printf("All tags: %+v\n", evt.Tags)
+	
+	amountTags := evt.Tags.GetAll([]string{"amount"})
+	fmt.Printf("Amount tags found: %+v\n", amountTags)
 	var m struct {
 		Description  string `json:"description"`
 		Requirements string `json:"requirements"`
@@ -108,14 +113,33 @@ func validateTaskProposal(evt *nostr.Event) (bool, string) {
 		return true, "invalid task proposal parameters"
 	}
 	
-	// Check for required tags
-	if !evt.Tags.ContainsAny("p", []string{}) {
-		return true, "must specify agent pubkey in p tag"
-	}
-	if !evt.Tags.ContainsAny("amount", []string{}) {
-		return true, "must specify amount tag"
+	// Check for required tags - need both agent and creator pubkeys
+	pTags := evt.Tags.GetAll([]string{"p"})
+	if len(pTags) < 2 {
+		return true, "must include both agent and creator pubkeys in p tags"
 	}
 	
+	// Verify creator pubkey matches event pubkey
+	creatorFound := false
+	for _, tag := range pTags {
+		if len(tag) > 1 && tag[1] == evt.PubKey {
+			creatorFound = true
+			break
+		}
+	}
+	if !creatorFound {
+		return true, "creator pubkey must match event pubkey"
+	}
+	
+	// Check amount tag
+	amountTags = evt.Tags.GetAll([]string{"amount"})
+	if len(amountTags) == 0 {
+		return true, "must include amount tag"
+	}
+	if len(amountTags[0]) < 2 {
+		return true, "invalid amount tag format"
+	}
+
 	return false, ""
 }
 
@@ -126,9 +150,22 @@ func validateAgentTaskAcceptance(ctx context.Context, evt *nostr.Event, valCtx *
 		return true, "must reference task proposal event"
 	}
 
-	// Must include creator pubkey
-	if !evt.Tags.ContainsAny("p", []string{}) {
-		return true, "must include creator pubkey in p tag"
+	// Must include both creator and agent pubkeys
+	pTags := evt.Tags.GetAll([]string{"p"})
+	if len(pTags) < 2 {
+		return true, "must include both creator and agent pubkeys in p tags"
+	}
+
+	// Verify agent pubkey matches event pubkey
+	agentFound := false
+	for _, tag := range pTags {
+		if len(tag) > 1 && tag[1] == evt.PubKey {
+			agentFound = true
+			break
+		}
+	}
+	if !agentFound {
+		return true, "agent pubkey must match event pubkey"
 	}
 
 	// Check if task has already been accepted
@@ -159,12 +196,31 @@ func validateTaskFinalization(ctx context.Context, evt *nostr.Event, valCtx *Val
 		return true, "must reference both acceptance and zap receipt events"
 	}
 
-	// Must include agent pubkey and amount
-	if !evt.Tags.ContainsAny("p", []string{}) {
-		return true, "must include agent pubkey in p tag"
+	// Must include both creator and agent pubkeys
+	pTags := evt.Tags.GetAll([]string{"p"})
+	if len(pTags) < 2 {
+		return true, "must include both creator and agent pubkeys in p tags"
 	}
-	if !evt.Tags.ContainsAny("amount", []string{}) {
+
+	// Verify creator pubkey matches event pubkey
+	creatorFound := false
+	for _, tag := range pTags {
+		if len(tag) > 1 && tag[1] == evt.PubKey {
+			creatorFound = true
+			break
+		}
+	}
+	if !creatorFound {
+		return true, "creator pubkey must match event pubkey"
+	}
+
+	// Check amount tag
+	amountTags := evt.Tags.GetAll([]string{"amount"})
+	if len(amountTags) == 0 {
 		return true, "must include amount tag"
+	}
+	if len(amountTags[0]) < 2 {
+		return true, "invalid amount tag format"
 	}
 
 	return false, ""
@@ -223,56 +279,6 @@ func validateWorkSubmission(ctx context.Context, evt *nostr.Event, valCtx *Valid
 	return false, ""
 }
 
-func validateTaskAcceptance(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
-	var m struct {
-		Version          string `json:"version"`
-		TaskID          string `json:"task_id"`
-		WorkerCommitment string `json:"worker_commitment"`
-	}
-	if err := json.Unmarshal([]byte(evt.Content), &m); err != nil {
-		return true, "invalid task acceptance json"
-	}
-	if m.Version == "" || m.TaskID == "" || m.WorkerCommitment == "" {
-		return true, "invalid task acceptance parameters"
-	}
-	// Debug: Print all tags
-	fmt.Printf("Task acceptance tags: %+v\n", evt.Tags)
-	
-	// Check if there's at least one "e" tag
-	eRefs := evt.Tags.GetAll([]string{"e"})
-	fmt.Printf("Found e tags: %+v\n", eRefs)
-	
-	if len(eRefs) == 0 {
-		return true, "must reference task event"
-	}
-
-	// Verify the referenced task event exists and check if it's already resolved
-	taskEventId := eRefs[0][1]
-	fmt.Printf("Task event ID from tag: %s\n", taskEventId)
-	
-	if taskEventId == "" {
-		return true, "invalid task event reference"
-	}
-
-	// Check if this task has already been resolved
-	resolutionFilter := nostr.Filter{
-		Kinds: []int{KindTaskResolution},
-		Tags: nostr.TagMap{
-			"e": []string{taskEventId},
-		},
-	}
-	
-	resolutionEvents, err := valCtx.QueryEvents(ctx, resolutionFilter)
-	if err == nil {
-		for evt := range resolutionEvents {
-			if evt != nil {
-				return true, "task has already been resolved"
-			}
-		}
-	}
-	return false, ""
-}
-
 func validateTaskResolution(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
 	var m struct {
 		Resolution       string `json:"resolution"`
@@ -298,8 +304,12 @@ func validateTaskResolution(ctx context.Context, evt *nostr.Event, valCtx *Valid
 	if len(evt.Tags.GetAll([]string{"p"})) < 2 {
 		return true, "must include creator and worker pubkeys in p tags"
 	}
-	if !evt.Tags.ContainsAny("amount", []string{}) {
+	amountTags := evt.Tags.GetAll([]string{"amount"})
+	if len(amountTags) == 0 {
 		return true, "must include amount tag"
+	}
+	if len(amountTags[0]) < 2 {
+		return true, "invalid amount tag format"
 	}
 	return false, ""
 }

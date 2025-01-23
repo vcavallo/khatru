@@ -27,7 +27,7 @@ echo ""
 ### 1. Register Escrow Agent
 
 # Register the escrow agent
-AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 3400 -c "{
+AGENT_EVENT=$(nak event --sec $AGENT_KEY --kind 3400 --content "{
   \"name\": \"Trusted Escrow Agent\",
   \"about\": \"Professional escrow service for nostr tasks\",
   \"fee_rate\": 0.01,
@@ -35,7 +35,7 @@ AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 3400 -c "{
   \"max_amount\": 1000000,
   \"dispute_resolution_policy\": \"Mediation first, then arbitration\",
   \"supported_currencies\": [\"BTC\"]
-}" -t p=$AGENT_PUB -t r="https://terms.example.com" ws://localhost:3334)
+}" -p $AGENT_PUB -t r="https://terms.example.com" ws://localhost:3334)
 
 # Save the event ID
 AGENT_EVENT_ID=$(echo $AGENT_EVENT | jq -r .id)
@@ -46,11 +46,11 @@ echo ""
 
 # Create a task proposal
 DEADLINE=$(date -d "+7 days" +%s)
-TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 3401 -c "{
+TASK_EVENT=$(nak event --sec $CREATOR_KEY --kind 3401 --content "{
   \"description\": \"Create a nostr client\",
   \"requirements\": \"Must support NIPs 1,2,4\",
   \"deadline\": $DEADLINE
-}" -t p=$AGENT_PUB -t amount=100000 ws://localhost:3334)
+}" -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
 
 # Save the event ID
 TASK_EVENT_ID=$(echo $TASK_EVENT | jq -r .id)
@@ -60,7 +60,7 @@ echo ""
 ### 3. Agent Accepts Task
 
 # Agent accepts the task
-ACCEPT_EVENT=$(nak event --sec $AGENT_KEY -k 3402 -t e=$TASK_EVENT_ID -t p=$CREATOR_PUB ws://localhost:3334)
+ACCEPT_EVENT=$(nak event --sec $AGENT_KEY --kind 3402 -e $TASK_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
 
 # Save the event ID
 ACCEPT_EVENT_ID=$(echo $ACCEPT_EVENT | jq -r .id)
@@ -71,7 +71,7 @@ echo ""
 
 # Simulate task finalization after zap
 ZAP_RECEIPT_ID="zap_receipt_123" # In reality this would come from a real zap
-FINAL_EVENT=$(nak event --sec $CREATOR_KEY -k 3403 -t e=$ACCEPT_EVENT_ID -t e=$ZAP_RECEIPT_ID -t p=$AGENT_PUB -t amount=100000 ws://localhost:3334)
+FINAL_EVENT=$(nak event --sec $CREATOR_KEY --kind 3403 -e $ACCEPT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
 
 # Save the event ID
 FINAL_EVENT_ID=$(echo $FINAL_EVENT | jq -r .id)
@@ -81,7 +81,7 @@ echo ""
 ### 5. Worker Application
 
 # Worker applies for the task
-APPLY_EVENT=$(nak event --sec $WORKER_KEY -k 3404 -c "I would like to work on this task. I have experience building nostr clients." -t e=$FINAL_EVENT_ID -t p=$CREATOR_PUB -t p=$AGENT_PUB ws://localhost:3334)
+APPLY_EVENT=$(nak event --sec $WORKER_KEY --kind 3404 --content "I would like to work on this task. I have experience building nostr clients." -e $FINAL_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
 
 # Save the event ID
 APPLY_EVENT_ID=$(echo $APPLY_EVENT | jq -r .id)
@@ -91,7 +91,7 @@ echo ""
 ### 6. Worker Assignment
 
 # Creator assigns the task to worker
-ASSIGN_EVENT=$(nak event --sec $CREATOR_KEY -k 3405 -t e=$FINAL_EVENT_ID -t e=$APPLY_EVENT_ID -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+ASSIGN_EVENT=$(nak event --sec $CREATOR_KEY --kind 3405 -e $FINAL_EVENT_ID -e $APPLY_EVENT_ID -p $WORKER_PUB -p $AGENT_PUB ws://localhost:3334)
 
 # Save the event ID
 ASSIGN_EVENT_ID=$(echo $ASSIGN_EVENT | jq -r .id)
@@ -101,7 +101,7 @@ echo ""
 ### 7. Work Submission
 
 # Worker submits completed work
-SUBMIT_EVENT=$(nak event --sec $WORKER_KEY -k 3406 -c "Work completed. Repository: https://github.com/example/nostr-client" -t e=$ASSIGN_EVENT_ID -t p=$CREATOR_PUB -t p=$AGENT_PUB ws://localhost:3334)
+SUBMIT_EVENT=$(nak event --sec $WORKER_KEY --kind 3406 --content "Work completed. Repository: https://github.com/example/nostr-client" -e $ASSIGN_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
 
 # Save the event ID
 SUBMIT_EVENT_ID=$(echo $SUBMIT_EVENT | jq -r .id)
@@ -111,10 +111,10 @@ echo ""
 ### 8. Task Resolution
 
 # Agent resolves the task after verifying work and processing payment
-RESOLVE_EVENT=$(nak event --sec $AGENT_KEY -k 3407 -c "{
+RESOLVE_EVENT=$(nak event --sec $AGENT_KEY --kind 3407 --content "{
   \"resolution\": \"completed\",
   \"resolution_details\": \"Work verified and payment sent to worker\"
-}" -t e=$SUBMIT_EVENT_ID -t e=$ZAP_RECEIPT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t amount=99000 ws://localhost:3334)
+}" -e $SUBMIT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $WORKER_PUB -t "amount=99000" ws://localhost:3334)
 
 # Save the event ID
 RESOLVE_EVENT_ID=$(echo $RESOLVE_EVENT | jq -r .id)
