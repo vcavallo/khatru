@@ -1,17 +1,8 @@
 # Testing NIP-100 Escrow Implementation
 
 This guide walks through testing the complete escrow workflow using `nak` CLI tool.
-
-**you must have `jq` installed; sorry**.
-
-## Start the Relay
-
-```bash
-# Build and run the relay
-go build -o escrow-relay main.go
-./escrow-relay
-```
 ## Implementation Details
+
 
 The relay implements NIP-100 with the following validations:
 
@@ -52,6 +43,17 @@ The relay implements NIP-100 with the following validations:
 5. Error handling is minimal in these examples
 
 # Testing / Example
+
+**you must have `jq` installed; sorry**.
+
+## Start the Relay
+
+```bash
+# Build and run the relay
+# From the root of the khatru repo:
+go build -o escrow-relay main.go
+./escrow-relay
+```
 
 This repo provides `examples/escrow/test.sh` which runs a 'happy-path' version 
 of the below test cases.
