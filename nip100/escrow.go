@@ -112,8 +112,16 @@ func validateTaskAcceptance(evt *nostr.Event) (bool, string) {
 	if m.Version == "" || m.TaskID == "" || m.WorkerCommitment == "" {
 		return true, "invalid task acceptance parameters"
 	}
-	if !evt.Tags.ContainsAny("e", nil) {
+	// Check if there's at least one "e" tag
+	eRefs := evt.Tags.GetAll([]string{"e"})
+	if len(eRefs) == 0 {
 		return true, "must reference task event"
+	}
+
+	// Verify the referenced task event exists and is of kind 30401
+	taskEventId := eRefs[0][1]
+	if taskEventId == "" {
+		return true, "invalid task event reference"
 	}
 	return false, ""
 }
