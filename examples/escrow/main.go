@@ -15,7 +15,15 @@ func main() {
 
 	// Add NIP-100 validation
 	relay.RejectEvent = append(relay.RejectEvent,
-		nip100.ValidateEscrowEvent,
+		func(ctx context.Context, event *nostr.Event) (bool, string) {
+			// Debug logging
+			fmt.Printf("Validating event kind %d with %d tags\n", event.Kind, len(event.Tags))
+			reject, msg := nip100.ValidateEscrowEvent(ctx, event)
+			if reject {
+				fmt.Printf("Event rejected: %s\n", msg)
+			}
+			return reject, msg
+		},
 		nip100.PreventFarFutureDeadlines,
 	)
 
