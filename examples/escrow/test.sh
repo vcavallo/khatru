@@ -1,20 +1,10 @@
-# Testing NIP-100 Escrow Implementation
+#!/bin/bash
 
-This guide walks through testing the complete escrow workflow using `nak` CLI tool.
-
-**you must have `jq` installed; sorry**.
-
-## Start the Relay
-
-```bash
-# Build and run the relay
-go build -o escrow-relay main.go
-./escrow-relay
-```
+echo "Full happy-path test for escrow NIP"
+echo ""
 
 ## Generate Test Keys
 
-```bash
 # Generate keys for each party (save these for the test session)
 echo "Generating escrow agent key..."
 AGENT_KEY=$(nak key generate)
@@ -33,19 +23,9 @@ WORKER_KEY=$(nak key generate)
 WORKER_PUB=$(nak key public $WORKER_KEY)
 echo "Worker pubkey: $WORKER_PUB"
 echo ""
-```
-
-## Test Complete Workflow
-
-Event kinds used in this workflow:
-- 30400: Escrow Agent Registration
-- 30401: Task Creation
-- 30402: Task Acceptance
-- 30403: Task Resolution (final settlement)
 
 ### 1. Register Escrow Agent
 
-```bash
 # Register the escrow agent
 AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 30400 -c "{
   \"version\": \"1.0.0\",
@@ -61,11 +41,9 @@ AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 30400 -c "{
 AGENT_EVENT_ID=$(echo $AGENT_EVENT | jq -r .id)
 echo "Agent registration event ID: $AGENT_EVENT_ID"
 echo ""
-```
 
 ### 2. Create Task
 
-```bash
 # Create a task (deadline 7 days from now)
 DEADLINE=$(date -d "+7 days" +%s)
 TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
@@ -83,11 +61,9 @@ TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
 TASK_EVENT_ID=$(echo $TASK_EVENT | jq -r .id)
 echo "Task creation event ID: $TASK_EVENT_ID"
 echo ""
-```
 
 ### 3. Accept Task
 
-```bash
 # Worker accepts the task
 ACCEPT_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
   \"version\": \"1.0.0\",
@@ -99,11 +75,9 @@ ACCEPT_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
 ACCEPT_EVENT_ID=$(echo $ACCEPT_EVENT | jq -r .id)
 echo "Task acceptance event ID: $ACCEPT_EVENT_ID"
 echo ""
-```
 
 ### 4. Resolve Task
 
-```bash
 # Resolve the task (can be done by agent)
 RESOLVE_EVENT=$(nak event --sec $AGENT_KEY -k 30403 -c "{
   \"version\": \"1.0.0\",
@@ -117,11 +91,9 @@ RESOLVE_EVENT=$(nak event --sec $AGENT_KEY -k 30403 -c "{
 RESOLVE_EVENT_ID=$(echo $RESOLVE_EVENT | jq -r .id)
 echo "Task resolution event ID: $RESOLVE_EVENT_ID"
 echo ""
-```
 
 ## Query Events
 
-```bash
 # Query all escrow-related events
 echo "All escrow agent registrations:"
 nak req -k 30400 ws://localhost:3334
@@ -144,45 +116,3 @@ echo "Complete thread for task $TASK_EVENT_ID:"
 nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $RESOLVE_EVENT_ID localhost:3334
 echo ""
 echo "Examples done!"
-```
-
-## Validation Tests
-
-```bash
-# Test invalid deadline (too far in future)
-LONG_DEADLINE=$(date -d "+60 days" +%s)
-echo "Testing invalid deadline..."
-nak event --sec $CREATOR_KEY -k 30401 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$(uuidgen)\",
-  \"description\": \"Test task\",
-  \"amount\": 100000,
-  \"payment_hash\": \"hash123\",
-  \"escrow_agent\": \"$AGENT_PUB\",
-  \"deadline\": $LONG_DEADLINE,
-  \"requirements\": \"Test requirements\"
-}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334
-
-# Test invalid resolution status
-echo "Testing invalid resolution status..."
-nak event --sec $AGENT_KEY -k 30403 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TASK_EVENT_ID\",
-  \"resolution\": \"invalid_status\",
-  \"settlement_proof\": \"proof123\",
-  \"resolution_details\": \"Invalid resolution\"
-}" -t e=$TASK_EVENT_ID -t e=$ACCEPT_EVENT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
-```
-
-## Clean Up
-
-The relay uses in-memory storage, so simply stopping and restarting the relay will clear all events.
-
-## Notes
-
-1. All commands assume the relay is running at ws://localhost:3334
-2. The UUIDs are generated randomly - in practice you might want consistent IDs for testing
-3. The payment_hash would come from a real Lightning Network invoice
-4. Real implementations should use persistent storage
-5. Error handling is minimal in these examples
-
