@@ -11,6 +11,50 @@ This guide walks through testing the complete escrow workflow using `nak` CLI to
 go build -o escrow-relay main.go
 ./escrow-relay
 ```
+## Implementation Details
+
+The relay implements NIP-100 with the following validations:
+
+### Event Kinds
+- 3400: Escrow Agent Registration - Agent publishes their service details and terms
+- 3401: Task Proposal - Creator publishes task details with requirements
+- 3402: Agent Task Acceptance - Agent accepts task proposal
+- 3403: Task Finalization - Creator confirms task with zap payment
+- 3404: Worker Application - Worker applies for task
+- 3405: Worker Assignment - Creator assigns task to worker
+- 3406: Work Submission - Worker submits completed work
+- 3407: Task Resolution - Agent resolves task and processes payment
+
+### Validation Rules
+- All events must have proper pubkey tags matching the event signer
+- Amount tags are required for task proposal, finalization, and resolution
+- Events must reference previous events in the workflow chain
+- Task deadlines cannot be more than 30 days in the future
+- Task resolution must be "completed", "rejected", or "canceled"
+- Events are validated for proper sequence (e.g., can't accept already resolved tasks)
+
+### Required Tags
+- Agent Registration: p (agent pubkey), r (terms URL)
+- Task Proposal: p (creator, agent pubkeys), amount
+- Task Acceptance: e (task event), p (creator, agent pubkeys)
+- Task Finalization: e (acceptance, zap events), p (creator, agent pubkeys), amount
+- Worker Application: e (task event), p (creator, agent pubkeys)
+- Worker Assignment: e (task, application events), p (worker, agent pubkeys)
+- Work Submission: e (assignment event), p (creator, agent pubkeys)
+- Task Resolution: e (submission, zap events), p (creator, worker pubkeys), amount
+
+## Notes
+
+1. All commands assume the relay is running at ws://localhost:3334
+2. The UUIDs are generated randomly - in practice you might want consistent IDs for testing
+3. The payment_hash would come from a real Lightning Network invoice
+4. Real implementations should use persistent storage
+5. Error handling is minimal in these examples
+
+# Testing / Example
+
+This repo provides `examples/escrow/test.sh` which runs a 'happy-path' version 
+of the below test cases.
 
 ## Generate Test Keys
 
@@ -38,24 +82,28 @@ echo ""
 ## Test Complete Workflow
 
 Event kinds used in this workflow:
-- 30400: Escrow Agent Registration
-- 30401: Task Creation
-- 30402: Task Acceptance
-- 30403: Task Resolution (final settlement)
+- 3400: Escrow Agent Registration
+- 3401: Task Proposal
+- 3402: Agent Task Acceptance
+- 3403: Task Finalization
+- 3404: Worker Application
+- 3405: Worker Assignment
+- 3406: Work Submission
+- 3407: Task Resolution
 
 ### 1. Register Escrow Agent
 
 ```bash
 # Register the escrow agent
-AGENT_EVENT=$(nak event --sec $AGENT_KEY -k 30400 -c "{
-  \"version\": \"1.0.0\",
-  \"pubkey\": \"$AGENT_PUB\",
+AGENT_EVENT=$(nak event --sec $AGENT_KEY --kind 3400 --content "{
+  \"name\": \"Trusted Escrow Agent\",
+  \"about\": \"Professional escrow service for nostr tasks\",
   \"fee_rate\": 0.01,
   \"min_amount\": 1000,
   \"max_amount\": 1000000,
   \"dispute_resolution_policy\": \"Mediation first, then arbitration\",
   \"supported_currencies\": [\"BTC\"]
-}" -t p=$AGENT_PUB -t t=ln-escrow-agent ws://localhost:3334)
+}" -p $AGENT_PUB -t r="https://terms.example.com" ws://localhost:3334)
 
 # Save the event ID
 AGENT_EVENT_ID=$(echo $AGENT_EVENT | jq -r .id)
@@ -63,37 +111,28 @@ echo "Agent registration event ID: $AGENT_EVENT_ID"
 echo ""
 ```
 
-### 2. Create Task
+### 2. Create Task Proposal
 
 ```bash
-# Create a task (deadline 7 days from now)
+# Create a task proposal
 DEADLINE=$(date -d "+7 days" +%s)
-TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$(uuidgen)\",
+TASK_EVENT=$(nak event --sec $CREATOR_KEY --kind 3401 --content "{
   \"description\": \"Create a nostr client\",
-  \"amount\": 100000,
-  \"payment_hash\": \"hash123\",
-  \"escrow_agent\": \"$AGENT_PUB\",
-  \"deadline\": $DEADLINE,
-  \"requirements\": \"Must support NIPs 1,2,4\"
-}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334)
+  \"requirements\": \"Must support NIPs 1,2,4\",
+  \"deadline\": $DEADLINE
+}" -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
 
 # Save the event ID
 TASK_EVENT_ID=$(echo $TASK_EVENT | jq -r .id)
-echo "Task creation event ID: $TASK_EVENT_ID"
+echo "Task proposal event ID: $TASK_EVENT_ID"
 echo ""
 ```
 
-### 3. Accept Task
+### 3. Agent Accepts Task
 
 ```bash
-# Worker accepts the task
-ACCEPT_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TASK_EVENT_ID\",
-  \"worker_commitment\": \"I agree to complete this task according to requirements\"
-}" -t e=$TASK_EVENT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+# Agent accepts the task
+ACCEPT_EVENT=$(nak event --sec $AGENT_KEY --kind 3402 -e $TASK_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
 
 # Save the event ID
 ACCEPT_EVENT_ID=$(echo $ACCEPT_EVENT | jq -r .id)
@@ -101,17 +140,63 @@ echo "Task acceptance event ID: $ACCEPT_EVENT_ID"
 echo ""
 ```
 
-### 4. Resolve Task
+### 4. Task Finalization (after zap)
 
 ```bash
-# Resolve the task (can be done by agent)
-RESOLVE_EVENT=$(nak event --sec $AGENT_KEY -k 30403 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TASK_EVENT_ID\",
-  \"resolution\": \"settled\",
-  \"settlement_proof\": \"lightning_txid_123\",
-  \"resolution_details\": \"Task completed successfully\"
-}" -t e=$TASK_EVENT_ID -t e=$ACCEPT_EVENT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
+# Simulate task finalization after zap
+ZAP_RECEIPT_ID="zap_receipt_123" # In reality this would come from a real zap
+FINAL_EVENT=$(nak event --sec $CREATOR_KEY --kind 3403 -e $ACCEPT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
+
+# Save the event ID
+FINAL_EVENT_ID=$(echo $FINAL_EVENT | jq -r .id)
+echo "Task finalization event ID: $FINAL_EVENT_ID"
+echo ""
+```
+
+### 5. Worker Application
+
+```bash
+# Worker applies for the task
+APPLY_EVENT=$(nak event --sec $WORKER_KEY --kind 3404 --content "I would like to work on this task. I have experience building nostr clients." -e $FINAL_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+
+# Save the event ID
+APPLY_EVENT_ID=$(echo $APPLY_EVENT | jq -r .id)
+echo "Worker application event ID: $APPLY_EVENT_ID"
+echo ""
+```
+
+### 6. Worker Assignment
+
+```bash
+# Creator assigns the task to worker
+ASSIGN_EVENT=$(nak event --sec $CREATOR_KEY --kind 3405 -e $FINAL_EVENT_ID -e $APPLY_EVENT_ID -p $WORKER_PUB -p $AGENT_PUB ws://localhost:3334)
+
+# Save the event ID
+ASSIGN_EVENT_ID=$(echo $ASSIGN_EVENT | jq -r .id)
+echo "Worker assignment event ID: $ASSIGN_EVENT_ID"
+echo ""
+```
+
+### 7. Work Submission
+
+```bash
+# Worker submits completed work
+SUBMIT_EVENT=$(nak event --sec $WORKER_KEY --kind 3406 --content "Work completed. Repository: https://github.com/example/nostr-client" -e $ASSIGN_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+
+# Save the event ID
+SUBMIT_EVENT_ID=$(echo $SUBMIT_EVENT | jq -r .id)
+echo "Work submission event ID: $SUBMIT_EVENT_ID"
+echo ""
+```
+
+### 8. Task Resolution
+
+```bash
+# Agent resolves the task after verifying work and processing payment
+RESOLVE_EVENT=$(nak event --sec $AGENT_KEY --kind 3407 --content "{
+  \"resolution\": \"completed\",
+  \"resolution_details\": \"Work verified and payment sent to worker\"
+}" -e $SUBMIT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $WORKER_PUB -t amount=99000 ws://localhost:3334)
 
 # Save the event ID
 RESOLVE_EVENT_ID=$(echo $RESOLVE_EVENT | jq -r .id)
@@ -124,160 +209,161 @@ echo ""
 ```bash
 # Query all escrow-related events
 echo "All escrow agent registrations:"
-nak req -k 30400 ws://localhost:3334
+nak req -k 3400 ws://localhost:3334
 echo ""
 
-echo "All tasks:"
-nak req -k 30401 ws://localhost:3334
+echo "All task proposals:"
+nak req -k 3401 ws://localhost:3334
 echo ""
 
-echo "All task acceptances:"
-nak req -k 30402 ws://localhost:3334
+echo "All agent acceptances:"
+nak req -k 3402 ws://localhost:3334
+echo ""
+
+echo "All task finalizations:"
+nak req -k 3403 ws://localhost:3334
+echo ""
+
+echo "All worker applications:"
+nak req -k 3404 ws://localhost:3334
+echo ""
+
+echo "All worker assignments:"
+nak req -k 3405 ws://localhost:3334
+echo ""
+
+echo "All work submissions:"
+nak req -k 3406 ws://localhost:3334
 echo ""
 
 echo "All task resolutions:"
-nak req -k 30403 ws://localhost:3334
+nak req -k 3407 ws://localhost:3334
 echo ""
 
-# Query specific task thread
-echo "Complete thread for task $TASK_EVENT_ID:"
-nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $RESOLVE_EVENT_ID localhost:3334
+# Query complete task thread
+echo "Complete thread for task:"
+nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $FINAL_EVENT_ID --id $APPLY_EVENT_ID --id $ASSIGN_EVENT_ID --id $SUBMIT_EVENT_ID --id $RESOLVE_EVENT_ID ws://localhost:3334
 echo ""
-echo "Examples done!"
 ```
+# Example output of tests:
 
-## Validation Tests
+```unset
+Full happy-path test for escrow NIP
 
-### Test Task Resolution Controls
+Generating escrow agent key...
+Agent pubkey: 082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a
 
-```bash
-# First create and resolve a task normally
-echo "Creating a task for resolution testing..."
-TEST_TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$(uuidgen)\",
-  \"description\": \"Test resolution controls\",
-  \"amount\": 100000,
-  \"payment_hash\": \"hash123\",
-  \"escrow_agent\": \"$AGENT_PUB\",
-  \"deadline\": $(date -d "+7 days" +%s),
-  \"requirements\": \"Test requirements\"
-}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334)
-TEST_TASK_ID=$(echo $TEST_TASK_EVENT | jq -r .id)
+Generating task creator key...
+Creator pubkey: 9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f
 
-# Accept the task
-echo "Accepting the task..."
-TEST_ACCEPT_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TEST_TASK_ID\",
-  \"worker_commitment\": \"I agree to complete this task\"
-}" -t e=$TEST_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
-TEST_ACCEPT_ID=$(echo $TEST_ACCEPT_EVENT | jq -r .id)
+Generating worker key...
+Worker pubkey: 184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce
 
-# Resolve the task
-echo "Resolving the task..."
-nak event --sec $AGENT_KEY -k 30403 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TEST_TASK_ID\",
-  \"resolution\": \"settled\",
-  \"settlement_proof\": \"proof123\",
-  \"resolution_details\": \"Task completed\"
-}" -t e=$TEST_TASK_ID -t e=$TEST_ACCEPT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
+Register an escrow agent
 
-# Try to accept the task again (should fail)
-echo "Trying to accept already resolved task (should fail)..."
-nak event --sec $WORKER_KEY -k 30402 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TEST_TASK_ID\",
-  \"worker_commitment\": \"Trying to accept resolved task\"
-}" -t e=$TEST_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3400,"id":"2dc15067277f63f747192c092b35e2fb7b0f525b4ec65c96cdc6950fc900a5ff","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667886,"tags":[["r","https://terms.example.com"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"{\n \"name\": \"Trusted Escrow Agent\",\n \"about\": \"Professional escrow service for nostr tasks\",\n \"fee_rate\": 0.01,\n \"min_amount\": 1000,\n \"max_amount\": 1000000,\n \"dispute_resolution_policy\": \"Mediation first, then arbitration\",\n \"supported_currencies\": [\"BTC\"]\n}","sig":"a81d1d60745e00b7547d18d833b634e0abefdc065708a4b2ee15b76d94a0bfa58624482c2da33c9ae2e687db039e82de3f590ead39fe9453c0dc5c4fc4878ff4"}
 
-# Try to resolve the task again (should fail)
-echo "Trying to resolve task again (should fail)..."
-nak event --sec $AGENT_KEY -k 30403 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TEST_TASK_ID\",
-  \"resolution\": \"settled\",
-  \"settlement_proof\": \"proof123\",
-  \"resolution_details\": \"Trying to resolve again\"
-}" -t e=$TEST_TASK_ID -t e=$TEST_ACCEPT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
+Agent registration event ID: 2dc15067277f63f747192c092b35e2fb7b0f525b4ec65c96cdc6950fc900a5ff
+
+Create task proposal
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3401,"id":"0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667886,"tags":[["amount","100000"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"{\n \"description\": \"Create a nostr client\",\n \"requirements\": \"Must support NIPs 1,2,4\",\n \"deadline\": 1738272686\n}","sig":"945e4a49c4fcc2cf5daba9f6157e3128ca5bb0f38d425e29573c31f179884f0219a4fb7b66bee6ceca314afa7961cb2288bd0c3a11bec32e634794d63fd90b12"}
+
+Task proposal event ID: 0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b
+
+Agent accepts task
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3402,"id":"e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667886,"tags":[["e","0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"418c506985e2c2744bc4a77597c6c3a40363dd72137f357a6d9d313f301385b71bf47af6a67f924d25a1ca4c09166beda8ea37f62a038b2580aafb96325811e7"}
+
+Task acceptance event ID: e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53
+
+Task finalized
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3403,"id":"2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667886,"tags":[["amount","100000"],["e","e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53"],["e","zap_receipt_123"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"cbf146dd42530935d54eac9d6b219ec166cb20bbdaf439fb45347be6810e551b9c32c999a9ece0abd62dbea903ba0b228ea6c9dade8410f219bec88329bc8ed9"}
+
+Task finalization event ID: 2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91
+
+Worker applies
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3404,"id":"914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e","pubkey":"184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce","created_at":1737667886,"tags":[["e","2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"I would like to work on this task. I have experience building nostr clients.","sig":"e4d1e48f03304b2e400819693be4bf3973f2cdc3f3396a8cc2ce134fb2f590f28cd041030bb42261eee16b66676972d4761a9cb7725083469cb68a89810257cf"}
+
+Worker application event ID: 914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e
+
+Worker assigned
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3405,"id":"bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667887,"tags":[["e","2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91"],["e","914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e"],["p","184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"3c1403c5bae95616c774d16d70a7e768837ac5303f957cca372cae7104352aac8d33d1dcedf91fef5e09d8bacf14b45d746213fbb36147b84b16914ebc13196e"}
+
+Worker assignment event ID: bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8
+
+Worker submits
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3406,"id":"b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed","pubkey":"184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce","created_at":1737667887,"tags":[["e","bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"Work completed. Repository: https://github.com/example/nostr-client","sig":"46ecbd4145586e58240ab1090f1096fe70313d7d9601626d898b764ab1717ddf32cc250cc769c0108bed5c6289166e8b7f700cb67a649a19d3af6d5dcc6d42e1"}
+
+Work submission event ID: b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed
+
+Agent resolves task
+
+connecting to ws://localhost:3334... ok.
+publishing to ws://localhost:3334... success.
+{"kind":3407,"id":"9e3bbe85433ba868b2adfc94156828863cdb05a028db1cf87d2a615821e95267","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667887,"tags":[["amount","99000"],["e","b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed"],["e","zap_receipt_123"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce"]],"content":"{\n \"resolution\": \"completed\",\n \"resolution_details\": \"Work verified and payment sent to worker\"\n}","sig":"4aacd69c55c76d3af8c91b2894c0c90c8b4a2a79e5ce90fa1f039eba3bf87c3c4816f402b2310a078ea64398ee23e90e5703244f05d4feb26bb193c8e93808a5"}
+
+Task resolution event ID: 9e3bbe85433ba868b2adfc94156828863cdb05a028db1cf87d2a615821e95267
+
+All escrow agent registrations:
+connecting to ws://localhost:3334... ok.
+{"kind":3400,"id":"2dc15067277f63f747192c092b35e2fb7b0f525b4ec65c96cdc6950fc900a5ff","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667886,"tags":[["r","https://terms.example.com"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"{\n  \"name\": \"Trusted Escrow Agent\",\n  \"about\": \"Professional escrow service for nostr tasks\",\n  \"fee_rate\": 0.01,\n  \"min_amount\": 1000,\n  \"max_amount\": 1000000,\n  \"dispute_resolution_policy\": \"Mediation first, then arbitration\",\n  \"supported_currencies\": [\"BTC\"]\n}","sig":"a81d1d60745e00b7547d18d833b634e0abefdc065708a4b2ee15b76d94a0bfa58624482c2da33c9ae2e687db039e82de3f590ead39fe9453c0dc5c4fc4878ff4"}
+
+All task proposals:
+connecting to ws://localhost:3334... ok.
+{"kind":3401,"id":"0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667886,"tags":[["amount","100000"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"{\n  \"description\": \"Create a nostr client\",\n  \"requirements\": \"Must support NIPs 1,2,4\",\n  \"deadline\": 1738272686\n}","sig":"945e4a49c4fcc2cf5daba9f6157e3128ca5bb0f38d425e29573c31f179884f0219a4fb7b66bee6ceca314afa7961cb2288bd0c3a11bec32e634794d63fd90b12"}
+
+All agent acceptances:
+connecting to ws://localhost:3334... ok.
+{"kind":3402,"id":"e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667886,"tags":[["e","0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"418c506985e2c2744bc4a77597c6c3a40363dd72137f357a6d9d313f301385b71bf47af6a67f924d25a1ca4c09166beda8ea37f62a038b2580aafb96325811e7"}
+
+All task finalizations:
+connecting to ws://localhost:3334... ok.
+{"kind":3403,"id":"2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667886,"tags":[["amount","100000"],["e","e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53"],["e","zap_receipt_123"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"cbf146dd42530935d54eac9d6b219ec166cb20bbdaf439fb45347be6810e551b9c32c999a9ece0abd62dbea903ba0b228ea6c9dade8410f219bec88329bc8ed9"}
+
+All worker applications:
+connecting to ws://localhost:3334... ok.
+{"kind":3404,"id":"914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e","pubkey":"184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce","created_at":1737667886,"tags":[["e","2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"I would like to work on this task. I have experience building nostr clients.","sig":"e4d1e48f03304b2e400819693be4bf3973f2cdc3f3396a8cc2ce134fb2f590f28cd041030bb42261eee16b66676972d4761a9cb7725083469cb68a89810257cf"}
+
+All worker assignments:
+connecting to ws://localhost:3334... ok.
+{"kind":3405,"id":"bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667887,"tags":[["e","2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91"],["e","914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e"],["p","184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"3c1403c5bae95616c774d16d70a7e768837ac5303f957cca372cae7104352aac8d33d1dcedf91fef5e09d8bacf14b45d746213fbb36147b84b16914ebc13196e"}
+
+All work submissions:
+connecting to ws://localhost:3334... ok.
+{"kind":3406,"id":"b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed","pubkey":"184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce","created_at":1737667887,"tags":[["e","bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"Work completed. Repository: https://github.com/example/nostr-client","sig":"46ecbd4145586e58240ab1090f1096fe70313d7d9601626d898b764ab1717ddf32cc250cc769c0108bed5c6289166e8b7f700cb67a649a19d3af6d5dcc6d42e1"}
+
+All task resolutions:
+connecting to ws://localhost:3334... ok.
+{"kind":3407,"id":"9e3bbe85433ba868b2adfc94156828863cdb05a028db1cf87d2a615821e95267","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667887,"tags":[["amount","99000"],["e","b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed"],["e","zap_receipt_123"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce"]],"content":"{\n  \"resolution\": \"completed\",\n  \"resolution_details\": \"Work verified and payment sent to worker\"\n}","sig":"4aacd69c55c76d3af8c91b2894c0c90c8b4a2a79e5ce90fa1f039eba3bf87c3c4816f402b2310a078ea64398ee23e90e5703244f05d4feb26bb193c8e93808a5"}
+
+Complete thread for task:
+connecting to ws://localhost:3334... ok.
+{"kind":3404,"id":"914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e","pubkey":"184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce","created_at":1737667886,"tags":[["e","2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"I would like to work on this task. I have experience building nostr clients.","sig":"e4d1e48f03304b2e400819693be4bf3973f2cdc3f3396a8cc2ce134fb2f590f28cd041030bb42261eee16b66676972d4761a9cb7725083469cb68a89810257cf"}
+{"kind":3405,"id":"bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667887,"tags":[["e","2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91"],["e","914ab9dd1d38805eef9da0fc13aaca3811dbe4ea27c3d4772552a4f465afb88e"],["p","184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"3c1403c5bae95616c774d16d70a7e768837ac5303f957cca372cae7104352aac8d33d1dcedf91fef5e09d8bacf14b45d746213fbb36147b84b16914ebc13196e"}
+{"kind":3406,"id":"b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed","pubkey":"184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce","created_at":1737667887,"tags":[["e","bc019c5f611e19f28d89585fd65e4aca8da76e6e23173d1b61c9589080149fb8"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"Work completed. Repository: https://github.com/example/nostr-client","sig":"46ecbd4145586e58240ab1090f1096fe70313d7d9601626d898b764ab1717ddf32cc250cc769c0108bed5c6289166e8b7f700cb67a649a19d3af6d5dcc6d42e1"}
+{"kind":3407,"id":"9e3bbe85433ba868b2adfc94156828863cdb05a028db1cf87d2a615821e95267","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667887,"tags":[["amount","99000"],["e","b91785ca084433d3e9a616332cb24a6847043bb15e04e7eea0eddb14c2ae2bed"],["e","zap_receipt_123"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","184abda6193802c66ca764f29c328faf14c21053117cc16b6c62319212bf63ce"]],"content":"{\n  \"resolution\": \"completed\",\n  \"resolution_details\": \"Work verified and payment sent to worker\"\n}","sig":"4aacd69c55c76d3af8c91b2894c0c90c8b4a2a79e5ce90fa1f039eba3bf87c3c4816f402b2310a078ea64398ee23e90e5703244f05d4feb26bb193c8e93808a5"}
+{"kind":3401,"id":"0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667886,"tags":[["amount","100000"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"{\n  \"description\": \"Create a nostr client\",\n  \"requirements\": \"Must support NIPs 1,2,4\",\n  \"deadline\": 1738272686\n}","sig":"945e4a49c4fcc2cf5daba9f6157e3128ca5bb0f38d425e29573c31f179884f0219a4fb7b66bee6ceca314afa7961cb2288bd0c3a11bec32e634794d63fd90b12"}
+{"kind":3402,"id":"e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53","pubkey":"082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a","created_at":1737667886,"tags":[["e","0cf4979d5e7d7085f5884b3fe0281605fc7b96ae997d73edbb947d03f63e275b"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"418c506985e2c2744bc4a77597c6c3a40363dd72137f357a6d9d313f301385b71bf47af6a67f924d25a1ca4c09166beda8ea37f62a038b2580aafb96325811e7"}
+{"kind":3403,"id":"2c4cf62454834a90a9ecc5aaa0feb69395559a72563568a510ae47872bb11d91","pubkey":"9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f","created_at":1737667886,"tags":[["amount","100000"],["e","e83ce82a62c465955de760631b8596ca3e299f1104948f49e431f9f1cf271f53"],["e","zap_receipt_123"],["p","9929cb8bf4160ba5728ca343c24a02b3ba3debc1e665a566cf349cdcf8d39d4f"],["p","082c7edd857d4cbac05a410d7731cf7e3e581a2b844c72779e56f45f2e96d44a"]],"content":"","sig":"cbf146dd42530935d54eac9d6b219ec166cb20bbdaf439fb45347be6810e551b9c32c999a9ece0abd62dbea903ba0b228ea6c9dade8410f219bec88329bc8ed9"}
+
+Test script completed!
 ```
-
-### Test Multiple Acceptances Before Resolution
-
-```bash
-# Create another test task
-echo "Creating a task for multiple acceptance testing..."
-MULTI_TASK_EVENT=$(nak event --sec $CREATOR_KEY -k 30401 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$(uuidgen)\",
-  \"description\": \"Test multiple acceptances\",
-  \"amount\": 100000,
-  \"payment_hash\": \"hash123\",
-  \"escrow_agent\": \"$AGENT_PUB\",
-  \"deadline\": $(date -d "+7 days" +%s),
-  \"requirements\": \"Test requirements\"
-}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334)
-MULTI_TASK_ID=$(echo $MULTI_TASK_EVENT | jq -r .id)
-
-# Multiple workers can accept the task
-echo "First worker accepting..."
-ACCEPT1_EVENT=$(nak event --sec $WORKER_KEY -k 30402 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$MULTI_TASK_ID\",
-  \"worker_commitment\": \"First worker accepts\"
-}" -t e=$MULTI_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334)
-
-# Generate another worker key for testing
-echo "Generating another worker key..."
-WORKER2_KEY=$(nak key generate)
-WORKER2_PUB=$(nak key public $WORKER2_KEY)
-
-echo "Second worker accepting..."
-ACCEPT2_EVENT=$(nak event --sec $WORKER2_KEY -k 30402 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$MULTI_TASK_ID\",
-  \"worker_commitment\": \"Second worker accepts\"
-}" -t e=$MULTI_TASK_ID -t p=$CREATOR_PUB -t p=$WORKER2_PUB -t p=$AGENT_PUB ws://localhost:3334)
-```
-
-## Other Validation Tests
-
-```bash
-# Test invalid deadline (too far in future)
-LONG_DEADLINE=$(date -d "+60 days" +%s)
-echo "Testing invalid deadline..."
-nak event --sec $CREATOR_KEY -k 30401 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$(uuidgen)\",
-  \"description\": \"Test task\",
-  \"amount\": 100000,
-  \"payment_hash\": \"hash123\",
-  \"escrow_agent\": \"$AGENT_PUB\",
-  \"deadline\": $LONG_DEADLINE,
-  \"requirements\": \"Test requirements\"
-}" -t p=$AGENT_PUB -t amount=100000,sat ws://localhost:3334
-
-# Test invalid resolution status
-echo "Testing invalid resolution status..."
-nak event --sec $AGENT_KEY -k 30403 -c "{
-  \"version\": \"1.0.0\",
-  \"task_id\": \"$TASK_EVENT_ID\",
-  \"resolution\": \"invalid_status\",
-  \"settlement_proof\": \"proof123\",
-  \"resolution_details\": \"Invalid resolution\"
-}" -t e=$TASK_EVENT_ID -t e=$ACCEPT_EVENT_ID -t p=$CREATOR_PUB -t p=$WORKER_PUB -t p=$AGENT_PUB ws://localhost:3334
-```
-
-## Clean Up
-
-The relay uses in-memory storage, so simply stopping and restarting the relay will clear all events.
-
-## Notes
-
-1. All commands assume the relay is running at ws://localhost:3334
-2. The UUIDs are generated randomly - in practice you might want consistent IDs for testing
-3. The payment_hash would come from a real Lightning Network invoice
-4. Real implementations should use persistent storage
-5. Error handling is minimal in these examples
-

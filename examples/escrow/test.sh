@@ -27,6 +27,8 @@ echo ""
 ### 1. Register Escrow Agent
 
 # Register the escrow agent
+echo "Register an escrow agent"
+echo ""
 AGENT_EVENT=$(nak event --sec $AGENT_KEY --kind 3400 --content "{
   \"name\": \"Trusted Escrow Agent\",
   \"about\": \"Professional escrow service for nostr tasks\",
@@ -37,6 +39,9 @@ AGENT_EVENT=$(nak event --sec $AGENT_KEY --kind 3400 --content "{
   \"supported_currencies\": [\"BTC\"]
 }" -p $AGENT_PUB -t r="https://terms.example.com" ws://localhost:3334)
 
+echo $AGENT_EVENT
+echo ""
+
 # Save the event ID
 AGENT_EVENT_ID=$(echo $AGENT_EVENT | jq -r .id)
 echo "Agent registration event ID: $AGENT_EVENT_ID"
@@ -45,12 +50,17 @@ echo ""
 ### 2. Create Task Proposal
 
 # Create a task proposal
+echo "Create task proposal"
+echo ""
 DEADLINE=$(date -d "+7 days" +%s)
 TASK_EVENT=$(nak event --sec $CREATOR_KEY --kind 3401 --content "{
   \"description\": \"Create a nostr client\",
   \"requirements\": \"Must support NIPs 1,2,4\",
   \"deadline\": $DEADLINE
 }" -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
+
+echo $TASK_EVENT
+echo ""
 
 # Save the event ID
 TASK_EVENT_ID=$(echo $TASK_EVENT | jq -r .id)
@@ -60,7 +70,12 @@ echo ""
 ### 3. Agent Accepts Task
 
 # Agent accepts the task
+echo "Agent accepts task"
+echo ""
 ACCEPT_EVENT=$(nak event --sec $AGENT_KEY --kind 3402 -e $TASK_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+
+echo $ACCEPT_EVENT
+echo ""
 
 # Save the event ID
 ACCEPT_EVENT_ID=$(echo $ACCEPT_EVENT | jq -r .id)
@@ -70,8 +85,13 @@ echo ""
 ### 4. Task Finalization (after zap)
 
 # Simulate task finalization after zap
+echo "Task finalized"
+echo ""
 ZAP_RECEIPT_ID="zap_receipt_123" # In reality this would come from a real zap
 FINAL_EVENT=$(nak event --sec $CREATOR_KEY --kind 3403 -e $ACCEPT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
+
+echo $FINAL_EVENT
+echo ""
 
 # Save the event ID
 FINAL_EVENT_ID=$(echo $FINAL_EVENT | jq -r .id)
@@ -81,7 +101,12 @@ echo ""
 ### 5. Worker Application
 
 # Worker applies for the task
+echo "Worker applies"
+echo ""
 APPLY_EVENT=$(nak event --sec $WORKER_KEY --kind 3404 --content "I would like to work on this task. I have experience building nostr clients." -e $FINAL_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+
+echo $APPLY_EVENT
+echo ""
 
 # Save the event ID
 APPLY_EVENT_ID=$(echo $APPLY_EVENT | jq -r .id)
@@ -91,7 +116,12 @@ echo ""
 ### 6. Worker Assignment
 
 # Creator assigns the task to worker
+echo "Worker assigned"
+echo ""
 ASSIGN_EVENT=$(nak event --sec $CREATOR_KEY --kind 3405 -e $FINAL_EVENT_ID -e $APPLY_EVENT_ID -p $WORKER_PUB -p $AGENT_PUB ws://localhost:3334)
+
+echo $ASSIGN_EVENT
+echo ""
 
 # Save the event ID
 ASSIGN_EVENT_ID=$(echo $ASSIGN_EVENT | jq -r .id)
@@ -101,7 +131,12 @@ echo ""
 ### 7. Work Submission
 
 # Worker submits completed work
+echo "Worker submits"
+echo ""
 SUBMIT_EVENT=$(nak event --sec $WORKER_KEY --kind 3406 --content "Work completed. Repository: https://github.com/example/nostr-client" -e $ASSIGN_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+
+echo $SUBMIT_EVENT
+echo ""
 
 # Save the event ID
 SUBMIT_EVENT_ID=$(echo $SUBMIT_EVENT | jq -r .id)
@@ -111,10 +146,15 @@ echo ""
 ### 8. Task Resolution
 
 # Agent resolves the task after verifying work and processing payment
+echo "Agent resolves task"
+echo ""
 RESOLVE_EVENT=$(nak event --sec $AGENT_KEY --kind 3407 --content "{
   \"resolution\": \"completed\",
   \"resolution_details\": \"Work verified and payment sent to worker\"
 }" -e $SUBMIT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $WORKER_PUB -t "amount=99000" ws://localhost:3334)
+
+echo $RESOLVE_EVENT
+echo ""
 
 # Save the event ID
 RESOLVE_EVENT_ID=$(echo $RESOLVE_EVENT | jq -r .id)
@@ -162,3 +202,5 @@ nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $FINAL_EVENT_ID --id $APP
 echo ""
 
 echo "Test script completed!"
+
+
