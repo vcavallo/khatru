@@ -10,10 +10,14 @@ import (
 
 // Event kinds for NIP-100
 const (
-	KindEscrowAgentRegistration = 30400
-	KindTaskCreation           = 30401
-	KindTaskAcceptance         = 30402
-	KindTaskResolution         = 30403
+	KindEscrowAgentRegistration = 3400
+	KindTaskProposal           = 3401
+	KindAgentTaskAcceptance    = 3402
+	KindTaskFinalization       = 3403
+	KindWorkerApplication      = 3404
+	KindWorkerAssignment       = 3405
+	KindWorkSubmission         = 3406
+	KindTaskResolution         = 3407
 )
 
 // ValidationContext holds functions needed for validation
@@ -26,10 +30,18 @@ func ValidateEscrowEvent(ctx context.Context, evt *nostr.Event, valCtx *Validati
 	switch evt.Kind {
 	case KindEscrowAgentRegistration:
 		return validateAgentRegistration(evt)
-	case KindTaskCreation:
-		return validateTaskCreation(evt)
-	case KindTaskAcceptance:
-		return validateTaskAcceptance(ctx, evt, valCtx)
+	case KindTaskProposal:
+		return validateTaskProposal(evt)
+	case KindAgentTaskAcceptance:
+		return validateAgentTaskAcceptance(ctx, evt, valCtx)
+	case KindTaskFinalization:
+		return validateTaskFinalization(ctx, evt, valCtx)
+	case KindWorkerApplication:
+		return validateWorkerApplication(ctx, evt, valCtx)
+	case KindWorkerAssignment:
+		return validateWorkerAssignment(ctx, evt, valCtx)
+	case KindWorkSubmission:
+		return validateWorkSubmission(ctx, evt, valCtx)
 	case KindTaskResolution:
 		return validateTaskResolution(ctx, evt, valCtx)
 	}
@@ -38,7 +50,7 @@ func ValidateEscrowEvent(ctx context.Context, evt *nostr.Event, valCtx *Validati
 
 // PreventFarFutureDeadlines prevents task creation events with deadlines more than 30 days in the future
 func PreventFarFutureDeadlines(ctx context.Context, evt *nostr.Event) (bool, string) {
-	if evt.Kind != KindTaskCreation {
+	if evt.Kind != KindTaskProposal {
 		return false, ""
 	}
 
@@ -60,8 +72,8 @@ func PreventFarFutureDeadlines(ctx context.Context, evt *nostr.Event) (bool, str
 
 func validateAgentRegistration(evt *nostr.Event) (bool, string) {
 	var m struct {
-		Version                string   `json:"version"`
-		PubKey                string   `json:"pubkey"`
+		Name                  string   `json:"name"`
+		About                 string   `json:"about"`
 		FeeRate               float64  `json:"fee_rate"`
 		MinAmount            int      `json:"min_amount"`
 		MaxAmount            int      `json:"max_amount"`
@@ -71,38 +83,143 @@ func validateAgentRegistration(evt *nostr.Event) (bool, string) {
 	if err := json.Unmarshal([]byte(evt.Content), &m); err != nil {
 		return true, "invalid escrow agent registration json"
 	}
-	if m.Version == "" || m.PubKey == "" || m.FeeRate <= 0 || m.MinAmount <= 0 || m.MaxAmount <= m.MinAmount {
+	if m.Name == "" || m.About == "" || m.FeeRate <= 0 || m.MinAmount <= 0 || m.MaxAmount <= m.MinAmount {
 		return true, "invalid escrow agent registration parameters"
 	}
 	if len(m.SupportedCurrencies) == 0 {
 		return true, "must support at least one currency"
 	}
-	if !evt.Tags.ContainsAny("p", []string{m.PubKey}) {
-		return true, "pubkey in content must match p tag"
+	if !evt.Tags.ContainsAny("p", []string{evt.PubKey}) {
+		return true, "must include agent pubkey in p tag"
 	}
 	return false, ""
 }
 
-func validateTaskCreation(evt *nostr.Event) (bool, string) {
+func validateTaskProposal(evt *nostr.Event) (bool, string) {
 	var m struct {
-		Version     string `json:"version"`
-		TaskID     string `json:"task_id"`
-		Description string `json:"description"`
-		Amount     int    `json:"amount"`
-		PaymentHash string `json:"payment_hash"`
-		EscrowAgent string `json:"escrow_agent"`
-		Deadline    int64  `json:"deadline"`
+		Description  string `json:"description"`
 		Requirements string `json:"requirements"`
+		Deadline     int64  `json:"deadline"`
 	}
 	if err := json.Unmarshal([]byte(evt.Content), &m); err != nil {
-		return true, "invalid task creation json"
+		return true, "invalid task proposal json"
 	}
-	if m.Version == "" || m.TaskID == "" || m.Amount <= 0 || m.PaymentHash == "" || m.EscrowAgent == "" {
-		return true, "invalid task creation parameters"
+	if m.Description == "" || m.Requirements == "" || m.Deadline <= 0 {
+		return true, "invalid task proposal parameters"
 	}
-	if !evt.Tags.ContainsAny("p", []string{m.EscrowAgent}) {
-		return true, "escrow agent in content must match p tag"
+	
+	// Check for required tags
+	if !evt.Tags.ContainsAny("p", []string{}) {
+		return true, "must specify agent pubkey in p tag"
 	}
+	if !evt.Tags.ContainsAny("amount", []string{}) {
+		return true, "must specify amount tag"
+	}
+	
+	return false, ""
+}
+
+func validateAgentTaskAcceptance(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
+	// Must reference task proposal event
+	eRefs := evt.Tags.GetAll([]string{"e"})
+	if len(eRefs) == 0 {
+		return true, "must reference task proposal event"
+	}
+
+	// Must include creator pubkey
+	if !evt.Tags.ContainsAny("p", []string{}) {
+		return true, "must include creator pubkey in p tag"
+	}
+
+	// Check if task has already been accepted
+	taskEventId := eRefs[0][1]
+	acceptanceFilter := nostr.Filter{
+		Kinds: []int{KindAgentTaskAcceptance},
+		Tags: nostr.TagMap{
+			"e": []string{taskEventId},
+		},
+	}
+	
+	acceptanceEvents, err := valCtx.QueryEvents(ctx, acceptanceFilter)
+	if err == nil {
+		for evt := range acceptanceEvents {
+			if evt != nil {
+				return true, "task has already been accepted"
+			}
+		}
+	}
+
+	return false, ""
+}
+
+func validateTaskFinalization(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
+	// Must reference agent acceptance and zap receipt events
+	eRefs := evt.Tags.GetAll([]string{"e"})
+	if len(eRefs) < 2 {
+		return true, "must reference both acceptance and zap receipt events"
+	}
+
+	// Must include agent pubkey and amount
+	if !evt.Tags.ContainsAny("p", []string{}) {
+		return true, "must include agent pubkey in p tag"
+	}
+	if !evt.Tags.ContainsAny("amount", []string{}) {
+		return true, "must include amount tag"
+	}
+
+	return false, ""
+}
+
+func validateWorkerApplication(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
+	if evt.Content == "" {
+		return true, "must include application details in content"
+	}
+
+	// Must reference finalized task event
+	eRefs := evt.Tags.GetAll([]string{"e"})
+	if len(eRefs) == 0 {
+		return true, "must reference finalized task event"
+	}
+
+	// Must include creator and agent pubkeys
+	if len(evt.Tags.GetAll([]string{"p"})) < 2 {
+		return true, "must include creator and agent pubkeys in p tags"
+	}
+
+	return false, ""
+}
+
+func validateWorkerAssignment(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
+	// Must reference finalized task and worker application events
+	eRefs := evt.Tags.GetAll([]string{"e"})
+	if len(eRefs) < 2 {
+		return true, "must reference both task and application events"
+	}
+
+	// Must include worker and agent pubkeys
+	if len(evt.Tags.GetAll([]string{"p"})) < 2 {
+		return true, "must include worker and agent pubkeys in p tags"
+	}
+
+	return false, ""
+}
+
+func validateWorkSubmission(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
+	if evt.Content == "" {
+		return true, "must include work details/proof in content"
+	}
+
+	// Must reference worker assignment event
+	eRefs := evt.Tags.GetAll([]string{"e"})
+	if len(eRefs) == 0 {
+		return true, "must reference worker assignment event"
+	}
+
+	// Must include creator and agent pubkeys
+	if len(evt.Tags.GetAll([]string{"p"})) < 2 {
+		return true, "must include creator and agent pubkeys in p tags"
+	}
+
 	return false, ""
 }
 
@@ -158,43 +275,31 @@ func validateTaskAcceptance(ctx context.Context, evt *nostr.Event, valCtx *Valid
 
 func validateTaskResolution(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
 	var m struct {
-		Version          string `json:"version"`
-		TaskID          string `json:"task_id"`
-		Resolution      string `json:"resolution"`
-		SettlementProof string `json:"settlement_proof"`
-		Details        string `json:"resolution_details"`
+		Resolution       string `json:"resolution"`
+		ResolutionDetails string `json:"resolution_details"`
 	}
 	if err := json.Unmarshal([]byte(evt.Content), &m); err != nil {
 		return true, "invalid task resolution json"
 	}
-	if m.Version == "" || m.TaskID == "" || m.Resolution == "" {
+	if m.Resolution == "" || m.ResolutionDetails == "" {
 		return true, "invalid task resolution parameters"
 	}
-	if m.Resolution != "settled" && m.Resolution != "disputed" && m.Resolution != "canceled" {
+	if m.Resolution != "completed" && m.Resolution != "rejected" && m.Resolution != "canceled" {
 		return true, "invalid resolution status"
 	}
 	
+	// Must reference work submission and zap receipt events
 	eRefs := evt.Tags.GetAll([]string{"e"})
 	if len(eRefs) < 2 {
-		return true, "must reference both task and acceptance events"
+		return true, "must reference work submission and zap receipt events"
 	}
 
-	// Check if this task has already been resolved
-	taskEventId := eRefs[0][1]
-	resolutionFilter := nostr.Filter{
-		Kinds: []int{KindTaskResolution},
-		Tags: nostr.TagMap{
-			"e": []string{taskEventId},
-		},
+	// Must include creator and worker pubkeys and amount
+	if len(evt.Tags.GetAll([]string{"p"})) < 2 {
+		return true, "must include creator and worker pubkeys in p tags"
 	}
-	
-	resolutionEvents, err := valCtx.QueryEvents(ctx, resolutionFilter)
-	if err == nil {
-		for evt := range resolutionEvents {
-			if evt != nil {
-				return true, "task has already been resolved"
-			}
-		}
+	if !evt.Tags.ContainsAny("amount", []string{}) {
+		return true, "must include amount tag"
 	}
 	return false, ""
 }

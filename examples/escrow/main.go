@@ -49,7 +49,8 @@ func main() {
 	)
 
 	// Add NIP-100 to supported NIPs
-	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 100)
+	// Add NIP-100 to supported NIPs and ensure we support zaps
+	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 1, 100)
 
 	// Add storage handlers
 	relay.StoreEvent = append(relay.StoreEvent,
