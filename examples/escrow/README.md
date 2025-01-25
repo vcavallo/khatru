@@ -1,10 +1,10 @@
-# Testing NIP-100 Escrow Implementation
+# Testing NIP-3400 Escrow Implementation
 
 This guide walks through testing the complete escrow workflow using `nak` CLI tool.
 ## Implementation Details
 
 
-The relay implements NIP-100 with the following validations:
+The relay implements NIP-3400 with the following validations:
 
 ### Event Kinds
 - 3400: Escrow Agent Registration - Agent publishes their service details and terms
@@ -51,8 +51,18 @@ The relay implements NIP-100 with the following validations:
 ```bash
 # Build and run the relay
 # From the root of the khatru repo:
-go build -o escrow-relay main.go
+go build -o escrow-relay examples/escrow/main.go
 ./escrow-relay
+```
+
+The relay will be available at `ws://localhost:3334`. When using the `nak` tool, make sure to include the WebSocket protocol:
+
+```bash
+# Correct format:
+nak event --content "hello" ws://localhost:3334
+
+# Incorrect format:
+nak event "hello" localhost:3334  # This will fail
 ```
 
 This repo provides `examples/escrow/test.sh` which runs a 'happy-path' version 

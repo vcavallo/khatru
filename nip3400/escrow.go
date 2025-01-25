@@ -1,4 +1,4 @@
-package nip100
+package nip3400
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-// Event kinds for NIP-100
+// Event kinds for NIP-3400
 const (
 	KindEscrowAgentRegistration = 3400
 	KindTaskProposal           = 3401
@@ -25,7 +25,7 @@ type ValidationContext struct {
 	QueryEvents func(context.Context, nostr.Filter) (chan *nostr.Event, error)
 }
 
-// ValidateEscrowEvent validates all NIP-100 events
+// ValidateEscrowEvent validates all NIP-3400 events
 func ValidateEscrowEvent(ctx context.Context, evt *nostr.Event, valCtx *ValidationContext) (bool, string) {
 	switch evt.Kind {
 	case KindEscrowAgentRegistration:

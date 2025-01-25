@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/fiatjaf/khatru"
-	"github.com/fiatjaf/khatru/nip100"
+	"github.com/fiatjaf/khatru/nip3400"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -17,7 +17,7 @@ func main() {
 	store := make(map[string]*nostr.Event)
 
 	// Create validation context with query function
-	valCtx := &nip100.ValidationContext{
+	valCtx := &nip3400.ValidationContext{
 		QueryEvents: func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
 			ch := make(chan *nostr.Event)
 			go func() {
@@ -32,25 +32,30 @@ func main() {
 		},
 	}
 
-	// Add NIP-100 validation
+	// Add NIP-3400 validation
 	relay.RejectEvent = append(relay.RejectEvent,
 		func(ctx context.Context, event *nostr.Event) (bool, string) {
+			// Allow regular text notes to pass through
+			if event.Kind == 1 {
+				return false, ""
+			}
+
 			// Debug logging
 			fmt.Printf("Validating event kind %d with %d tags\n", event.Kind, len(event.Tags))
 			fmt.Printf("Event content: %s\n", event.Content)
 			fmt.Printf("Event tags: %+v\n", event.Tags)
-			reject, msg := nip100.ValidateEscrowEvent(ctx, event, valCtx)
+			reject, msg := nip3400.ValidateEscrowEvent(ctx, event, valCtx)
 			if reject {
 				fmt.Printf("Event rejected: %s\n", msg)
 			}
 			return reject, msg
 		},
-		nip100.PreventFarFutureDeadlines,
+		nip3400.PreventFarFutureDeadlines,
 	)
 
-	// Add NIP-100 to supported NIPs
-	// Add NIP-100 to supported NIPs and ensure we support zaps
-	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 1, 100)
+	// Add NIP-3400 to supported NIPs
+	// Add NIP-3400 to supported NIPs and ensure we support zaps
+	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 1, 3400)
 
 	// Add storage handlers
 	relay.StoreEvent = append(relay.StoreEvent,
@@ -75,6 +80,6 @@ func main() {
 		},
 	)
 
-	fmt.Println("running escrow relay on :3334")
+	fmt.Println("running escrow relay on ws://localhost:3334")
 	http.ListenAndServe(":3334", relay)
 }
