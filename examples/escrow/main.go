@@ -53,7 +53,11 @@ func main() {
 			if isCatallaxEvent {
 				reject, msg := nip3400.ValidateEscrowEvent(ctx, event, valCtx)
 				if reject {
-					fmt.Printf("Event rejected: %s\n", msg)
+					fmt.Printf("EVENT VALIDATION FAILED: %s\n", msg)
+					// Store the rejection reason to aid in test script error detection
+					event.Tags = append(event.Tags, nostr.Tag{"rejection_reason", msg})
+				} else {
+					fmt.Printf("EVENT VALIDATION PASSED ✓\n")
 				}
 				return reject, msg
 			}
