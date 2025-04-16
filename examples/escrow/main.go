@@ -44,18 +44,28 @@ func main() {
 			fmt.Printf("Validating event kind %d with %d tags\n", event.Kind, len(event.Tags))
 			fmt.Printf("Event content: %s\n", event.Content)
 			fmt.Printf("Event tags: %+v\n", event.Tags)
-			reject, msg := nip3400.ValidateEscrowEvent(ctx, event, valCtx)
-			if reject {
-				fmt.Printf("Event rejected: %s\n", msg)
+			
+			// Check if this is a Catallax event
+			isCatallaxEvent := event.Kind == nip3400.KindArbiterAnnouncement ||
+				event.Kind == nip3400.KindTaskProposal ||
+				event.Kind == nip3400.KindTaskConclusion
+			
+			if isCatallaxEvent {
+				reject, msg := nip3400.ValidateEscrowEvent(ctx, event, valCtx)
+				if reject {
+					fmt.Printf("Event rejected: %s\n", msg)
+				}
+				return reject, msg
 			}
-			return reject, msg
+			
+			return false, ""
 		},
 		nip3400.PreventFarFutureDeadlines,
 	)
 
 	// Add NIP-3400 to supported NIPs
-	// Add NIP-3400 to supported NIPs and ensure we support zaps
-	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 1, 3400)
+	// Also support NIP-1 (basic protocol) and NIP-57 for zaps
+	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 1, 57, 33400)
 
 	// Add storage handlers
 	relay.StoreEvent = append(relay.StoreEvent,
@@ -80,6 +90,6 @@ func main() {
 		},
 	)
 
-	fmt.Println("running escrow relay on ws://localhost:3334")
+	fmt.Println("running Catallax relay on ws://localhost:3334")
 	http.ListenAndServe(":3334", relay)
 }

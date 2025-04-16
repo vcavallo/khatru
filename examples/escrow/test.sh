@@ -1,21 +1,21 @@
 #!/bin/bash
 
-echo "Full happy-path test for escrow NIP"
+echo "Full happy-path test for Catallax escrow system (NIP-3400)"
 echo ""
 
 ## Generate Test Keys
 
 # Generate keys for each party (save these for the test session)
-echo "Generating escrow agent key..."
-AGENT_KEY=$(nak key generate)
-AGENT_PUB=$(nak key public $AGENT_KEY)
-echo "Agent pubkey: $AGENT_PUB"
+echo "Generating arbiter key..."
+ARBITER_KEY=$(nak key generate)
+ARBITER_PUB=$(nak key public $ARBITER_KEY)
+echo "Arbiter pubkey: $ARBITER_PUB"
 echo ""
 
-echo "Generating task creator key..."
-CREATOR_KEY=$(nak key generate)
-CREATOR_PUB=$(nak key public $CREATOR_KEY)
-echo "Creator pubkey: $CREATOR_PUB"
+echo "Generating patron key..."
+PATRON_KEY=$(nak key generate)
+PATRON_PUB=$(nak key public $PATRON_KEY)
+echo "Patron pubkey: $PATRON_PUB"
 echo ""
 
 echo "Generating worker key..."
@@ -24,40 +24,39 @@ WORKER_PUB=$(nak key public $WORKER_KEY)
 echo "Worker pubkey: $WORKER_PUB"
 echo ""
 
-### 1. Register Escrow Agent
+### 1. Register Arbiter Service (Kind 33400)
 
-# Register the escrow agent
-echo "Register an escrow agent"
+# Register the arbiter service announcement
+echo "Register an arbiter service"
 echo ""
-AGENT_EVENT=$(nak event --sec $AGENT_KEY --kind 3400 --content "{
-  \"name\": \"Trusted Escrow Agent\",
+SERVICE_ID="web-dev-escrow-service"
+ARBITER_EVENT=$(nak event --sec $ARBITER_KEY --kind 33400 --content "{
+  \"name\": \"Trusted Escrow Service\",
   \"about\": \"Professional escrow service for nostr tasks\",
-  \"fee_rate\": 0.01,
-  \"min_amount\": 1000,
-  \"max_amount\": 1000000,
-  \"dispute_resolution_policy\": \"Mediation first, then arbitration\",
-  \"supported_currencies\": [\"BTC\"]
-}" -p $AGENT_PUB -t r="https://terms.example.com" ws://localhost:3334)
+  \"policy_text\": \"Mediation first, then arbitration if needed\"
+}" -t "d=$SERVICE_ID" -p $ARBITER_PUB -t "fee_type=percentage" -t "fee_amount=0.05" -t "min_amount=10000" -t "t=programming" -t "t=web development" ws://localhost:3334)
 
-echo $AGENT_EVENT
+echo $ARBITER_EVENT
 echo ""
 
 # Save the event ID
-AGENT_EVENT_ID=$(echo $AGENT_EVENT | jq -r .id)
-echo "Agent registration event ID: $AGENT_EVENT_ID"
+ARBITER_EVENT_ID=$(echo $ARBITER_EVENT | jq -r .id)
+echo "Arbiter service announcement event ID: $ARBITER_EVENT_ID"
 echo ""
 
-### 2. Create Task Proposal
+### 2. Create Task Proposal (Kind 33401)
 
-# Create a task proposal
+# Create a task proposal (status: proposed)
 echo "Create task proposal"
 echo ""
+TASK_ID="landing-page-task-123"
 DEADLINE=$(date -d "+7 days" +%s)
-TASK_EVENT=$(nak event --sec $CREATOR_KEY --kind 3401 --content "{
-  \"description\": \"Create a nostr client\",
-  \"requirements\": \"Must support NIPs 1,2,4\",
+TASK_EVENT=$(nak event --sec $PATRON_KEY --kind 33401 --content "{
+  \"title\": \"Build a simple landing page\",
+  \"description\": \"Create a responsive landing page for a small business\",
+  \"requirements\": \"HTML/CSS/JS, responsive design, contact form, 3 sections\",
   \"deadline\": $DEADLINE
-}" -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
+}" -t "d=$TASK_ID" -p $PATRON_PUB -p $ARBITER_PUB -t "a=33400:$ARBITER_PUB:$SERVICE_ID" -t "amount=100000" -t "status=proposed" -t "t=web development" ws://localhost:3334)
 
 echo $TASK_EVENT
 echo ""
@@ -67,140 +66,107 @@ TASK_EVENT_ID=$(echo $TASK_EVENT | jq -r .id)
 echo "Task proposal event ID: $TASK_EVENT_ID"
 echo ""
 
-### 3. Agent Accepts Task
+### 3. Update Task to Funded Status (Kind 33401 replacement)
 
-# Agent accepts the task
-echo "Agent accepts task"
-echo ""
-ACCEPT_EVENT=$(nak event --sec $AGENT_KEY --kind 3402 -e $TASK_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
-
-echo $ACCEPT_EVENT
-echo ""
-
-# Save the event ID
-ACCEPT_EVENT_ID=$(echo $ACCEPT_EVENT | jq -r .id)
-echo "Task acceptance event ID: $ACCEPT_EVENT_ID"
-echo ""
-
-### 4. Task Finalization (after zap)
-
-# Simulate task finalization after zap
-echo "Task finalized"
-echo ""
+# Simulate a zap to fund the escrow
 ZAP_RECEIPT_ID="zap_receipt_123" # In reality this would come from a real zap
-FINAL_EVENT=$(nak event --sec $CREATOR_KEY --kind 3403 -e $ACCEPT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $AGENT_PUB -t amount=100000 ws://localhost:3334)
 
-echo $FINAL_EVENT
+# Update task to funded status
+echo "Update task to funded status"
+echo ""
+FUNDED_EVENT=$(nak event --sec $PATRON_KEY --kind 33401 --content "{
+  \"title\": \"Build a simple landing page\",
+  \"description\": \"Create a responsive landing page for a small business\",
+  \"requirements\": \"HTML/CSS/JS, responsive design, contact form, 3 sections\",
+  \"deadline\": $DEADLINE
+}" -t "d=$TASK_ID" -p $PATRON_PUB -p $ARBITER_PUB -t "a=33400:$ARBITER_PUB:$SERVICE_ID" -t "amount=100000" -t "status=funded" -t "t=web development" -t "e=$ZAP_RECEIPT_ID:relay-url:zap" ws://localhost:3334)
+
+echo $FUNDED_EVENT
 echo ""
 
 # Save the event ID
-FINAL_EVENT_ID=$(echo $FINAL_EVENT | jq -r .id)
-echo "Task finalization event ID: $FINAL_EVENT_ID"
+FUNDED_EVENT_ID=$(echo $FUNDED_EVENT | jq -r .id)
+echo "Funded task event ID: $FUNDED_EVENT_ID"
 echo ""
 
-### 5. Worker Application
+### 4. Update Task to In Progress with Worker Assigned (Kind 33401 replacement)
 
-# Worker applies for the task
-echo "Worker applies"
+# Update task to in_progress status with worker assigned
+echo "Update task to in_progress status with worker assigned"
 echo ""
-APPLY_EVENT=$(nak event --sec $WORKER_KEY --kind 3404 --content "I would like to work on this task. I have experience building nostr clients." -e $FINAL_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+PROGRESS_EVENT=$(nak event --sec $PATRON_KEY --kind 33401 --content "{
+  \"title\": \"Build a simple landing page\",
+  \"description\": \"Create a responsive landing page for a small business\",
+  \"requirements\": \"HTML/CSS/JS, responsive design, contact form, 3 sections\",
+  \"deadline\": $DEADLINE
+}" -t "d=$TASK_ID" -p $PATRON_PUB -p $ARBITER_PUB -p $WORKER_PUB -t "a=33400:$ARBITER_PUB:$SERVICE_ID" -t "amount=100000" -t "status=in_progress" -t "t=web development" -t "e=$ZAP_RECEIPT_ID:relay-url:zap" ws://localhost:3334)
 
-echo $APPLY_EVENT
-echo ""
-
-# Save the event ID
-APPLY_EVENT_ID=$(echo $APPLY_EVENT | jq -r .id)
-echo "Worker application event ID: $APPLY_EVENT_ID"
-echo ""
-
-### 6. Worker Assignment
-
-# Creator assigns the task to worker
-echo "Worker assigned"
-echo ""
-ASSIGN_EVENT=$(nak event --sec $CREATOR_KEY --kind 3405 -e $FINAL_EVENT_ID -e $APPLY_EVENT_ID -p $WORKER_PUB -p $AGENT_PUB ws://localhost:3334)
-
-echo $ASSIGN_EVENT
+echo $PROGRESS_EVENT
 echo ""
 
 # Save the event ID
-ASSIGN_EVENT_ID=$(echo $ASSIGN_EVENT | jq -r .id)
-echo "Worker assignment event ID: $ASSIGN_EVENT_ID"
+PROGRESS_EVENT_ID=$(echo $PROGRESS_EVENT | jq -r .id)
+echo "In-progress task event ID: $PROGRESS_EVENT_ID"
 echo ""
 
-### 7. Work Submission
+### 5. Update Task to Submitted Status (Kind 33401 replacement)
 
-# Worker submits completed work
-echo "Worker submits"
+# Update task to submitted status
+echo "Update task to submitted status"
 echo ""
-SUBMIT_EVENT=$(nak event --sec $WORKER_KEY --kind 3406 --content "Work completed. Repository: https://github.com/example/nostr-client" -e $ASSIGN_EVENT_ID -p $CREATOR_PUB -p $AGENT_PUB ws://localhost:3334)
+SUBMITTED_EVENT=$(nak event --sec $PATRON_KEY --kind 33401 --content "{
+  \"title\": \"Build a simple landing page\",
+  \"description\": \"Create a responsive landing page for a small business\",
+  \"requirements\": \"HTML/CSS/JS, responsive design, contact form, 3 sections\",
+  \"deadline\": $DEADLINE
+}" -t "d=$TASK_ID" -p $PATRON_PUB -p $ARBITER_PUB -p $WORKER_PUB -t "a=33400:$ARBITER_PUB:$SERVICE_ID" -t "amount=100000" -t "status=submitted" -t "t=web development" -t "e=$ZAP_RECEIPT_ID:relay-url:zap" ws://localhost:3334)
 
-echo $SUBMIT_EVENT
-echo ""
-
-# Save the event ID
-SUBMIT_EVENT_ID=$(echo $SUBMIT_EVENT | jq -r .id)
-echo "Work submission event ID: $SUBMIT_EVENT_ID"
-echo ""
-
-### 8. Task Resolution
-
-# Agent resolves the task after verifying work and processing payment
-echo "Agent resolves task"
-echo ""
-RESOLVE_EVENT=$(nak event --sec $AGENT_KEY --kind 3407 --content "{
-  \"resolution\": \"completed\",
-  \"resolution_details\": \"Work verified and payment sent to worker\"
-}" -e $SUBMIT_EVENT_ID -e $ZAP_RECEIPT_ID -p $CREATOR_PUB -p $WORKER_PUB -t "amount=99000" ws://localhost:3334)
-
-echo $RESOLVE_EVENT
+echo $SUBMITTED_EVENT
 echo ""
 
 # Save the event ID
-RESOLVE_EVENT_ID=$(echo $RESOLVE_EVENT | jq -r .id)
-echo "Task resolution event ID: $RESOLVE_EVENT_ID"
+SUBMITTED_EVENT_ID=$(echo $SUBMITTED_EVENT | jq -r .id)
+echo "Submitted task event ID: $SUBMITTED_EVENT_ID"
+echo ""
+
+### 6. Task Conclusion (Kind 3402)
+
+# Simulate a zap for worker payment
+PAYOUT_ZAP_ID="payout_zap_receipt_456" # In reality this would come from a real zap
+
+# Arbiter concludes the task with successful resolution
+echo "Arbiter concludes task"
+echo ""
+CONCLUDE_EVENT=$(nak event --sec $ARBITER_KEY --kind 3402 --content "{
+  \"resolution_details\": \"Task completed successfully, landing page delivered with all requirements met.\"
+}" -t "e=$PAYOUT_ZAP_ID" -t "e=$SUBMITTED_EVENT_ID" -p $PATRON_PUB -p $ARBITER_PUB -p $WORKER_PUB -t "resolution=successful" -t "a=33401:$PATRON_PUB:$TASK_ID" ws://localhost:3334)
+
+echo $CONCLUDE_EVENT
+echo ""
+
+# Save the event ID
+CONCLUDE_EVENT_ID=$(echo $CONCLUDE_EVENT | jq -r .id)
+echo "Task conclusion event ID: $CONCLUDE_EVENT_ID"
 echo ""
 
 ## Query Events
 
 # Query all escrow-related events
-echo "All escrow agent registrations:"
-nak req -k 3400 ws://localhost:3334
+echo "All arbiter service announcements:"
+nak req -k 33400 ws://localhost:3334
 echo ""
 
 echo "All task proposals:"
-nak req -k 3401 ws://localhost:3334
+nak req -k 33401 ws://localhost:3334
 echo ""
 
-echo "All agent acceptances:"
+echo "All task conclusions:"
 nak req -k 3402 ws://localhost:3334
-echo ""
-
-echo "All task finalizations:"
-nak req -k 3403 ws://localhost:3334
-echo ""
-
-echo "All worker applications:"
-nak req -k 3404 ws://localhost:3334
-echo ""
-
-echo "All worker assignments:"
-nak req -k 3405 ws://localhost:3334
-echo ""
-
-echo "All work submissions:"
-nak req -k 3406 ws://localhost:3334
-echo ""
-
-echo "All task resolutions:"
-nak req -k 3407 ws://localhost:3334
 echo ""
 
 # Query complete task thread
 echo "Complete thread for task:"
-nak req --id $TASK_EVENT_ID --id $ACCEPT_EVENT_ID --id $FINAL_EVENT_ID --id $APPLY_EVENT_ID --id $ASSIGN_EVENT_ID --id $SUBMIT_EVENT_ID --id $RESOLVE_EVENT_ID ws://localhost:3334
+nak req --id $TASK_EVENT_ID --id $FUNDED_EVENT_ID --id $PROGRESS_EVENT_ID --id $SUBMITTED_EVENT_ID --id $CONCLUDE_EVENT_ID ws://localhost:3334
 echo ""
 
 echo "Test script completed!"
-
-
