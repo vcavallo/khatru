@@ -222,7 +222,27 @@ func validateTaskProposal(evt *nostr.Event) (bool, string) {
 			return true, "funded status requires zap receipt reference"
 		}
 		
-		// Special handling for testing with funded status
+		// TODO: PRODUCTION READINESS
+// The current implementation includes special handling for test environments.
+// For production, consider the following approaches:
+//
+// 1. Environment-based configuration:
+//    - Add an environment variable (e.g., ESCROW_ENV=test|prod)
+//    - Use different validation logic based on the environment
+//    - Example: if os.Getenv("ESCROW_ENV") == "test" { /* relaxed validation */ }
+//
+// 2. Proper zap verification in production:
+//    - Query the actual zap receipt event to verify it exists
+//    - Validate the zap amount matches the required amount
+//    - Check the zap is from the expected sender (patron)
+//    - Verify zap has proper Lightning invoice payment info
+//
+// 3. Implement a formal test mock framework:
+//    - Use dependency injection for zap validation
+//    - In tests, inject a mock validator
+//    - In production, inject a real validator that performs thorough checks
+//
+// Special handling for testing with funded status
 		if status == "funded" {
 			zapFound := false
 			eTags := evt.Tags.GetAll([]string{"e"})
@@ -254,8 +274,10 @@ func validateTaskProposal(evt *nostr.Event) (bool, string) {
 				}
 			}
 			
-			// Skip validation for testing - any e tag is considered valid
-			zapFound = true  // Temporary patch for testing
+			// TODO: REMOVE FOR PRODUCTION
+			// This is a temporary bypass for testing purposes.
+			// In production, this should be removed to enforce proper zap validation.
+			zapFound = true  // Temporary test patch - REMOVE FOR PRODUCTION
 			
 			if !zapFound {
 				return true, "funded status requires zap receipt reference with 'zap' marker"
